@@ -152,15 +152,39 @@ class Model:
                 mis[drop_nodes] = 0
                 changed = True
         return mis
+    
+    def repair_mvc(self, mvc_pred, edge_index, mvc_scores):
+        row, col = edge_index
+        mvc = mvc_pred.clone()
+        # edges with both endpoints unselected --> not allowed
+        uncovered = (mvc[row] == 0) & (mvc[col] == 0)
+        if uncovered.any():
+            rr = row[uncovered]
+            cc = col[uncovered]
+            # choose endpoint with higher model confidence
+            pick_r = mvc_scores[rr] >= mvc_scores[cc]
+            add_nodes = torch.where(pick_r, rr, cc)
+            mvc[add_nodes] = 1
+        return mvc
+    
+    def build_features(self, data):
+        for fn in [
+            self.add_degree_feature,
+            self.add_mean_neighbor_degree,
+            self.add_core_number_feature,
+        ]:
+            data = fn(data)
+        return data
+        
+
 
     def predict(self, data):
-        data = self.add_core_number_feature(self.add_mean_neighbor_degree(self.add_degree_feature(data)))
+        data = self.build_features(data)
         x = data.x.float()
 
         x = x.float().to(self.device)
         edge_index = data.edge_index.to(self.device)
 
-        
 
         with torch.no_grad():
             out = self.net(x, edge_index)
@@ -170,6 +194,7 @@ class Model:
         mc  = (out[:, 2] > 0).long()
 
         mis = self.repair_mis(mis, edge_index, out[:, 0])
+        mvc = self.repair_mvc(mvc, edge_index, out[:, 1])
 
         return {
             "mis": mis.long().cpu(),
