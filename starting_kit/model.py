@@ -11,7 +11,7 @@ from torch_geometric.utils import degree
 #  [1, 1, 0],   # targets
 # ])
 
-FEATURE_COUNT = 5
+FEATURE_COUNT = 6
 
 class GIN(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers):
@@ -66,6 +66,7 @@ class Model:
         # Compute per-node degree and reshape to [num_nodes, 1]
         deg = degree(row, data.num_nodes).view(-1, 1).float()
         deg_norm = deg / max(data.num_nodes - 1, 1)
+        log_deg = torch.log1p(deg)
         # Get existing node features
         x = data.x
         # Error handling if node features do not exist
@@ -76,7 +77,7 @@ class Model:
         else:
             x = x.float()
         # Append degree as a feature
-        data.x = torch.cat([x, deg, deg_norm], dim=1)
+        data.x = torch.cat([x, deg, deg_norm, log_deg], dim=1)
         return data
     
     def add_mean_neighbor_degree(self, data):
