@@ -114,6 +114,25 @@ class Model:
         return data
 
     
+    def repair_mis(self, mis_pred, edge_index, mis_scores):
+       
+        source, target = edge_index
+        mis = mis_pred.clone()
+
+        changed = True
+        while changed:
+            changed = False
+            conflicts = (mis[source] == 1) & (mis[target] == 1) # both cannot be 1-1 at the same time
+            if conflicts.any():
+                rr = source[conflicts]
+                cc = target[conflicts]
+                # drop lower score endpoint (take higher prob endpoint)
+                drop_r = mis_scores[rr] <= mis_scores[cc]
+                drop_nodes = torch.where(drop_r, rr, cc)
+                mis[drop_nodes] = 0
+                changed = True
+        return mis
+
     def predict(self, data):
         data = self.add_mean_neighbor_degree(self.add_degree_feature(data))
         x = data.x.float()
@@ -121,12 +140,20 @@ class Model:
         x = x.float().to(self.device)
         edge_index = data.edge_index.to(self.device)
 
+        
+
         with torch.no_grad():
             out = self.net(x, edge_index)
 
+        mis = (out[:, 0] > 0).long()
+        mvc = (out[:, 1] > 0).long()
+        mc  = (out[:, 2] > 0).long()
+
+        mis = self.repair_mis(mis, edge_index, out[:, 0])
+
         return {
-            "mis": (out[:, 0] > 0).long().cpu(),
-            "mvc": (out[:, 1] > 0).long().cpu(),
-            "mc": (out[:, 2] > 0).long().cpu(),
+            "mis": mis.long().cpu(),
+            "mvc": mvc.cpu(),
+            "mc": mc.cpu(),
         }
 
