@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GINConv, MLP
 import os
+from torch_geometric.utils import degree
 
 
 class GIN(nn.Module):
@@ -36,10 +37,11 @@ class GIN(nn.Module):
         return logits
 
 
+
 class Model:
     def __init__(self, model_dir="./"):
         self.device = torch.device("cpu")
-        self.net = GIN(1, 128, 4).to(self.device)
+        self.net = GIN(2, 128, 4).to(self.device)
 
         if model_dir is not None:
             path = os.path.join(model_dir, "model.pt")
@@ -47,11 +49,36 @@ class Model:
                 self.net.load_state_dict(torch.load(path, map_location=self.device))
 
         self.net.eval()
+    
+    def add_degree_feature(self, data):
+
+        # First row contains source nodes of each edge
+        row = data.edge_index[0]
+
+        # Compute per-node degree and reshape to [num_nodes, 1]
+        deg = degree(row, data.num_nodes).view(-1, 1).float()
+        deg_norm = deg / max(data.num_nodes - 1, 1)
+
+        # Get existing node features
+        x = data.x
+        
+        # Error handling if node features do not exist
+        if x is None:
+            x = torch.ones((data.num_nodes, 1), dtype=torch.float)
+        elif x.dim() == 1:
+            x = x.view(-1, 1).float()
+        else:
+            x = x.float()
+
+        # Append degree as a feature
+        data.x = torch.cat([x, deg, deg_norm], dim=1)
+        return data
 
     def predict(self, data):
-        x = data.x
-        if x.dim() == 1:
-            x = x.unsqueeze(-1)
+        data = self.add_degree_feature(data)
+        x = data.x.float()
+
+        print(x.shape, "data is here")
         x = x.float().to(self.device)
         edge_index = data.edge_index.to(self.device)
 
