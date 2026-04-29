@@ -11,7 +11,7 @@ from torch_geometric.utils import degree
 #  [1, 1, 0],   # targets
 # ])
 
-FEATURE_COUNT = 4
+FEATURE_COUNT = 5
 
 class GIN(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers):
@@ -92,16 +92,25 @@ class Model:
         neigh_cnt = torch.zeros(N, dtype=torch.float, device=deg.device)
         neigh_sum.index_add_(0, row, neigh_deg_per_edge)
         neigh_cnt.index_add_(0, row, torch.ones_like(neigh_deg_per_edge))
-
         mean_neigh_deg = (neigh_sum / neigh_cnt.clamp(min=1)).view(-1, 1)
+
+        max_neigh_deg = torch.full((N,), -1e9, dtype=torch.float, device=deg.device)
+        max_neigh_deg = max_neigh_deg.scatter_reduce(
+            0, row, neigh_deg_per_edge, reduce="amax", include_self=True
+        )
+        max_neigh_deg = torch.where(
+            max_neigh_deg < -1e8, torch.zeros_like(max_neigh_deg), max_neigh_deg
+        ).view(-1, 1)      
+        
         x = data.x
+
         if x is None:
             x = torch.ones((N, 1), dtype=torch.float, device=deg.device)
         elif x.dim() == 1:
             x = x.view(-1, 1).float()
         else:
             x = x.float()
-        data.x = torch.cat([x, mean_neigh_deg], dim=1)
+        data.x = torch.cat([x, mean_neigh_deg, max_neigh_deg], dim=1)
         return data
 
     
