@@ -4,6 +4,9 @@ import torch.nn.functional as F
 from torch_geometric.nn import GINConv, MLP
 import os
 from torch_geometric.utils import degree
+from torch_geometric.utils import to_networkx
+import networkx as nx
+
 
 
 # edge_index = tensor([
@@ -11,7 +14,7 @@ from torch_geometric.utils import degree
 #  [1, 1, 0],   # targets
 # ])
 
-FEATURE_COUNT = 6
+FEATURE_COUNT = 7
 
 class GIN(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers):
@@ -113,6 +116,22 @@ class Model:
             x = x.float()
         data.x = torch.cat([x, mean_neigh_deg, max_neigh_deg], dim=1)
         return data
+    
+    def add_core_number_feature(self, data):
+        G = to_networkx(data, to_undirected=True)
+        core = nx.core_number(G)
+        N = data.num_nodes
+        core_feat = torch.tensor([core[i] for i in range(N)], dtype=torch.float).view(-1, 1)
+        x = data.x
+        if x is None:
+            x = torch.ones((N, 1), dtype=torch.float)
+        elif x.dim() == 1:
+            x = x.view(-1, 1).float()
+        else:
+            x = x.float()
+        data.x = torch.cat([x, core_feat], dim=1)
+        return data
+
 
     
     def repair_mis(self, mis_pred, edge_index, mis_scores):
@@ -135,7 +154,7 @@ class Model:
         return mis
 
     def predict(self, data):
-        data = self.add_mean_neighbor_degree(self.add_degree_feature(data))
+        data = self.add_core_number_feature(self.add_mean_neighbor_degree(self.add_degree_feature(data)))
         x = data.x.float()
 
         x = x.float().to(self.device)
