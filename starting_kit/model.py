@@ -14,7 +14,7 @@ import networkx as nx
 #  [1, 1, 0],   # targets
 # ])
 
-FEATURE_COUNT = 7
+FEATURE_COUNT = 8
 
 class GIN(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers):
@@ -132,6 +132,21 @@ class Model:
         data.x = torch.cat([x, core_feat], dim=1)
         return data
 
+    def add_triangle_count_feature(self, data):
+        G = to_networkx(data, to_undirected=True)
+        triangles = nx.triangles(G)
+        N = data.num_nodes
+        tri_feat = torch.tensor([triangles[i] for i in range(N)], dtype=torch.float).view(-1, 1)
+        x = data.x
+        if x is None:
+            x = torch.ones((N, 1), dtype=torch.float)
+        elif x.dim() == 1:
+            x = x.view(-1, 1).float()
+        else:
+            x = x.float()
+        data.x = torch.cat([x, tri_feat], dim=1)
+        return data
+
 
     
     def repair_mis(self, mis_pred, edge_index, mis_scores):
@@ -153,6 +168,34 @@ class Model:
                 changed = True
         return mis
     
+    def repair_mc(self, mc_pred, edge_index, mc_scores):
+        row, col = edge_index
+        mc = mc_pred.clone()
+
+        changed = True
+        while changed:
+            changed = False
+            sel_mask = mc.bool()
+            clique_size = sel_mask.sum().item()
+            if clique_size < 2:
+                break
+
+            both_selected = sel_mask[row] & sel_mask[col]
+            intra_deg = torch.zeros(mc.numel(), dtype=torch.long, device=mc.device)
+            intra_deg.index_add_(
+                0, row[both_selected],
+                torch.ones(both_selected.sum(), dtype=torch.long, device=mc.device)
+            )
+
+            violations = sel_mask & (intra_deg < clique_size - 1)
+            if violations.any():
+                scores = mc_scores.clone()
+                scores[~violations] = float("inf")
+                mc[scores.argmin()] = 0
+                changed = True
+
+        return mc
+
     def repair_mvc(self, mvc_pred, edge_index, mvc_scores):
         row, col = edge_index
         mvc = mvc_pred.clone()
@@ -172,6 +215,7 @@ class Model:
             self.add_degree_feature,
             self.add_mean_neighbor_degree,
             self.add_core_number_feature,
+            self.add_triangle_count_feature,
         ]:
             data = fn(data)
         return data
@@ -195,6 +239,7 @@ class Model:
 
         mis = self.repair_mis(mis, edge_index, out[:, 0])
         mvc = self.repair_mvc(mvc, edge_index, out[:, 1])
+        mc  = self.repair_mc(mc, edge_index, out[:, 2])
 
         return {
             "mis": mis.long().cpu(),
