@@ -15,6 +15,8 @@ import networkx as nx
 # ])
 
 FEATURE_COUNT = 8
+HIDDEN_CHANNELS = 128
+NUM_LAYERS = 4
 
 class GIN(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers):
@@ -29,13 +31,17 @@ class GIN(nn.Module):
             mlp = nn.Sequential(
                 nn.Linear(in_dim, hidden_channels),
                 nn.ReLU(),
+                nn.Identity(),
                 nn.Linear(hidden_channels, hidden_channels)
             )
 
             self.convs.append(GINConv(mlp, train_eps=True))
             self.batch_norms.append(nn.BatchNorm1d(hidden_channels))
 
-        self.classifier = MLP([hidden_channels] * 3 + [3])
+        self.classifier = nn.Sequential(
+            nn.Identity(),
+            MLP([hidden_channels] * 3 + [3]),
+        )
 
     def forward(self, x, edge_index):
         for conv, bn in zip(self.convs, self.batch_norms):
@@ -51,7 +57,7 @@ class GIN(nn.Module):
 class Model:
     def __init__(self, model_dir="./"):
         self.device = torch.device("cpu")
-        self.net = GIN(FEATURE_COUNT, 128, 4).to(self.device)
+        self.net = GIN(FEATURE_COUNT, HIDDEN_CHANNELS, NUM_LAYERS).to(self.device)
 
         if model_dir is not None:
             path = os.path.join(model_dir, "model.pt")
@@ -61,32 +67,17 @@ class Model:
         self.net.eval()
     
     def add_degree_feature(self, data):
-        """
-        Appends degree and normalized degree as features
-        """
-        # First row contains source nodes of each edge
         row = data.edge_index[0]
-        # Compute per-node degree and reshape to [num_nodes, 1]
         deg = degree(row, data.num_nodes).view(-1, 1).float()
         deg_norm = deg / max(data.num_nodes - 1, 1)
         log_deg = torch.log1p(deg)
-        # Get existing node features
         x = data.x
-        # Error handling if node features do not exist
-        if x is None:
-            x = torch.ones((data.num_nodes, 1), dtype=torch.float)
-        elif x.dim() == 1:
-            x = x.view(-1, 1).float()
-        else:
-            x = x.float()
-        # Append degree as a feature
         data.x = torch.cat([x, deg, deg_norm, log_deg], dim=1)
+        
+        x = x.float()
         return data
     
     def add_mean_neighbor_degree(self, data):
-        """
-        Appends one feature channel: mean degree of each node's neighbors.
-        """
         row, col = data.edge_index
         N = data.num_nodes
         deg = degree(row, N, dtype=torch.float) 
@@ -106,14 +97,10 @@ class Model:
             max_neigh_deg < -1e8, torch.zeros_like(max_neigh_deg), max_neigh_deg
         ).view(-1, 1)      
         
-        x = data.x
+        x = data.x.float()
+        x = x.float()
 
-        if x is None:
-            x = torch.ones((N, 1), dtype=torch.float, device=deg.device)
-        elif x.dim() == 1:
-            x = x.view(-1, 1).float()
-        else:
-            x = x.float()
+            
         data.x = torch.cat([x, mean_neigh_deg, max_neigh_deg], dim=1)
         return data
     
@@ -123,12 +110,7 @@ class Model:
         N = data.num_nodes
         core_feat = torch.tensor([core[i] for i in range(N)], dtype=torch.float).view(-1, 1)
         x = data.x
-        if x is None:
-            x = torch.ones((N, 1), dtype=torch.float)
-        elif x.dim() == 1:
-            x = x.view(-1, 1).float()
-        else:
-            x = x.float()
+        x = x.float()
         data.x = torch.cat([x, core_feat], dim=1)
         return data
 
@@ -138,12 +120,7 @@ class Model:
         N = data.num_nodes
         tri_feat = torch.tensor([triangles[i] for i in range(N)], dtype=torch.float).view(-1, 1)
         x = data.x
-        if x is None:
-            x = torch.ones((N, 1), dtype=torch.float)
-        elif x.dim() == 1:
-            x = x.view(-1, 1).float()
-        else:
-            x = x.float()
+        x = x.float()
         data.x = torch.cat([x, tri_feat], dim=1)
         return data
 
@@ -199,12 +176,11 @@ class Model:
     def repair_mvc(self, mvc_pred, edge_index, mvc_scores):
         row, col = edge_index
         mvc = mvc_pred.clone()
-        # edges with both endpoints unselected --> not allowed
+
         uncovered = (mvc[row] == 0) & (mvc[col] == 0)
         if uncovered.any():
             rr = row[uncovered]
             cc = col[uncovered]
-            # choose endpoint with higher model confidence
             pick_r = mvc_scores[rr] >= mvc_scores[cc]
             add_nodes = torch.where(pick_r, rr, cc)
             mvc[add_nodes] = 1
@@ -219,8 +195,7 @@ class Model:
         ]:
             data = fn(data)
         return data
-        
-
+    
 
     def predict(self, data):
         data = self.build_features(data)
@@ -246,4 +221,3 @@ class Model:
             "mvc": mvc.cpu(),
             "mc": mc.cpu(),
         }
-
