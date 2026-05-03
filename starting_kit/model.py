@@ -72,9 +72,12 @@ class Model:
         deg_norm = deg / max(data.num_nodes - 1, 1)
         log_deg = torch.log1p(deg)
         x = data.x
+        x = x.float()
+        if x.dim() == 1:
+            x = x.view(-1, 1).float()
         data.x = torch.cat([x, deg, deg_norm, log_deg], dim=1)
         
-        x = x.float()
+        
         return data
     
     def add_mean_neighbor_degree(self, data):
@@ -99,7 +102,8 @@ class Model:
         
         x = data.x.float()
         x = x.float()
-
+        if x.dim() == 1:
+            x = x.view(-1, 1).float()
             
         data.x = torch.cat([x, mean_neigh_deg, max_neigh_deg], dim=1)
         return data
@@ -111,6 +115,8 @@ class Model:
         core_feat = torch.tensor([core[i] for i in range(N)], dtype=torch.float).view(-1, 1)
         x = data.x
         x = x.float()
+        if x.dim() == 1:
+            x = x.view(-1, 1).float()
         data.x = torch.cat([x, core_feat], dim=1)
         return data
 
@@ -121,6 +127,8 @@ class Model:
         tri_feat = torch.tensor([triangles[i] for i in range(N)], dtype=torch.float).view(-1, 1)
         x = data.x
         x = x.float()
+        if x.dim() == 1:
+            x = x.view(-1, 1).float()
         data.x = torch.cat([x, tri_feat], dim=1)
         return data
 
@@ -198,6 +206,8 @@ class Model:
     
 
     def predict(self, data):
+        print(data)
+
         data = self.build_features(data)
         x = data.x.float()
 
