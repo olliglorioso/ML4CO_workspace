@@ -14,7 +14,7 @@ import networkx as nx
 #  [1, 1, 0],   # targets
 # ])
 
-FEATURE_COUNT = 8
+FEATURE_COUNT = 6
 HIDDEN_CHANNELS = 128
 NUM_LAYERS = 4
 
@@ -38,10 +38,9 @@ class GIN(nn.Module):
             self.convs.append(GINConv(mlp, train_eps=True))
             self.batch_norms.append(nn.BatchNorm1d(hidden_channels))
 
-        self.classifier = nn.Sequential(
-            nn.Identity(),
-            MLP([hidden_channels] * 3 + [3]),
-        )
+        self.mis_head = MLP([hidden_channels, hidden_channels, hidden_channels, 1])
+        self.mvc_head = MLP([hidden_channels, hidden_channels, hidden_channels, 1])
+        self.mc_head = MLP([hidden_channels, hidden_channels, hidden_channels, 1])
 
     def forward(self, x, edge_index):
         for conv, bn in zip(self.convs, self.batch_norms):
@@ -49,8 +48,10 @@ class GIN(nn.Module):
             x = bn(x)
             x = F.relu(x)
 
-        logits = self.classifier(x)
-        return logits
+        mis_logit = self.mis_head(x)
+        mvc_logit = self.mvc_head(x)
+        mc_logit = self.mc_head(x)
+        return torch.cat([mis_logit, mvc_logit, mc_logit], dim=-1)
 
 
 
@@ -75,7 +76,7 @@ class Model:
         x = x.float()
         if x.dim() == 1:
             x = x.view(-1, 1).float()
-        data.x = torch.cat([x, deg, deg_norm, log_deg], dim=1)
+        data.x = torch.cat([x, deg_norm, log_deg], dim=1)
         
         
         return data
@@ -106,18 +107,6 @@ class Model:
             x = x.view(-1, 1).float()
             
         data.x = torch.cat([x, mean_neigh_deg, max_neigh_deg], dim=1)
-        return data
-    
-    def add_core_number_feature(self, data):
-        G = to_networkx(data, to_undirected=True)
-        core = nx.core_number(G)
-        N = data.num_nodes
-        core_feat = torch.tensor([core[i] for i in range(N)], dtype=torch.float).view(-1, 1)
-        x = data.x
-        x = x.float()
-        if x.dim() == 1:
-            x = x.view(-1, 1).float()
-        data.x = torch.cat([x, core_feat], dim=1)
         return data
 
     def add_triangle_count_feature(self, data):
@@ -198,14 +187,13 @@ class Model:
         for fn in [
             self.add_degree_feature,
             self.add_mean_neighbor_degree,
-            self.add_core_number_feature,
             self.add_triangle_count_feature,
         ]:
             data = fn(data)
         return data
     
 
-    def predict(self, data):
+    def predict(self, data, repair=True):
         print(data)
 
         data = self.build_features(data)
@@ -217,14 +205,13 @@ class Model:
 
         with torch.no_grad():
             out = self.net(x, edge_index)
-
         mis = (out[:, 0] > 0).long()
         mvc = (out[:, 1] > 0).long()
         mc  = (out[:, 2] > 0).long()
-
-        mis = self.repair_mis(mis, edge_index, out[:, 0])
-        mvc = self.repair_mvc(mvc, edge_index, out[:, 1])
-        mc  = self.repair_mc(mc, edge_index, out[:, 2])
+        if repair:
+            mis = self.repair_mis(mis, edge_index, out[:, 0])
+            mvc = self.repair_mvc(mvc, edge_index, out[:, 1])
+            mc  = self.repair_mc(mc, edge_index, out[:, 2])
 
         return {
             "mis": mis.long().cpu(),

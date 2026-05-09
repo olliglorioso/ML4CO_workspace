@@ -34,7 +34,7 @@ class GATv2Net(nn.Module):
                 hidden_channels,
                 heads=heads,
                 concat=True,
-                dropout=0.1
+                dropout=0.2
             )
 
             self.convs.append(conv)
@@ -209,7 +209,7 @@ class Model:
         return data
     
 
-    def predict(self, data):
+    def predict(self, data, repair=True):
         data = self.build_features(data)
         x = data.x.float()
 
@@ -224,9 +224,10 @@ class Model:
         mvc = (out[:, 1] > 0).long()
         mc  = (out[:, 2] > 0).long()
 
-        mis = self.repair_mis(mis, edge_index, out[:, 0])
-        mvc = self.repair_mvc(mvc, edge_index, out[:, 1])
-        mc  = self.repair_mc(mc, edge_index, out[:, 2])
+        if repair:
+            mis = self.repair_mis(mis, edge_index, out[:, 0])
+            mvc = self.repair_mvc(mvc, edge_index, out[:, 1])
+            mc  = self.repair_mc(mc, edge_index, out[:, 2])
 
         return {
             "mis": mis.long().cpu(),
