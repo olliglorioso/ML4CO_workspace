@@ -16,7 +16,7 @@ import networkx as nx
 
 FEATURE_COUNT = 6
 HIDDEN_CHANNELS = 256
-NUM_LAYERS = 4
+NUM_LAYERS = 5
 
 class GIN(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers):
@@ -121,67 +121,64 @@ class Model:
         data.x = torch.cat([x, tri_feat], dim=1)
         return data
 
-
-    
-    def repair_mis(self, mis_pred, edge_index, mis_scores):
-       
-        source, target = edge_index
-        mis = mis_pred.clone()
-
-        changed = True
-        while changed:
-            changed = False
-            conflicts = (mis[source] == 1) & (mis[target] == 1) # both cannot be 1-1 at the same time
-            if conflicts.any():
-                rr = source[conflicts]
-                cc = target[conflicts]
-                # drop lower score endpoint (take higher prob endpoint)
-                drop_r = mis_scores[rr] <= mis_scores[cc]
-                drop_nodes = torch.where(drop_r, rr, cc)
-                mis[drop_nodes] = 0
-                changed = True
-        return mis
-    
-    def repair_mc(self, mc_pred, edge_index, mc_scores):
+    def rollout_search_mis(self, logits, edge_index, num_rollouts=64):
+        """
+        The Master Solver.
+        """
+        probs = torch.sigmoid(logits)
+        candidates = torch.bernoulli(probs.repeat(num_rollouts, 1)).to(self.device)
+        
+        best_mis = None
+        best_size = -1
         row, col = edge_index
-        mc = mc_pred.clone()
-
-        changed = True
-        while changed:
-            changed = False
-            sel_mask = mc.bool()
-            clique_size = sel_mask.sum().item()
-            if clique_size < 2:
-                break
-
-            both_selected = sel_mask[row] & sel_mask[col]
-            intra_deg = torch.zeros(mc.numel(), dtype=torch.long, device=mc.device)
-            intra_deg.index_add_(
-                0, row[both_selected],
-                torch.ones(both_selected.sum(), dtype=torch.long, device=mc.device)
-            )
-
-            violations = sel_mask & (intra_deg < clique_size - 1)
-            if violations.any():
-                scores = mc_scores.clone()
-                scores[~violations] = float("inf")
-                mc[scores.argmin()] = 0
-                changed = True
-
-        return mc
-
-    def repair_mvc(self, mvc_pred, edge_index, mvc_scores):
-        row, col = edge_index
-        mvc = mvc_pred.clone()
-
-        uncovered = (mvc[row] == 0) & (mvc[col] == 0)
-        if uncovered.any():
-            rr = row[uncovered]
-            cc = col[uncovered]
-            pick_r = mvc_scores[rr] >= mvc_scores[cc]
-            add_nodes = torch.where(pick_r, rr, cc)
-            mvc[add_nodes] = 1
-        return mvc
+        
+        for i in range(num_rollouts):
+            mask = candidates[i]
+            
+            changed = True
+            while changed:
+                changed = False
+                conflicts = (mask[row] == 1) & (mask[col] == 1)
+                if conflicts.any():
+                    rr = row[conflicts]
+                    cc = col[conflicts]
+                    drop_r = logits[rr] <= logits[cc]
+                    drop_nodes = torch.where(drop_r, rr, cc)
+                    mask[drop_nodes] = 0
+                    changed = True
+                    
+            changed = True
+            while changed:
+                changed = False
+                sel_neighbors = torch.zeros_like(mask)
+                sel_neighbors.index_add_(0, row, mask[col])
+                
+                available = (mask == 0) & (sel_neighbors == 0)
+                if available.any():
+                    avail_logits = logits.clone()
+                    avail_logits[~available] = -float('inf')
+                    best_node = avail_logits.argmax()
+                    mask[best_node] = 1
+                    changed = True
+                    
+            size = mask.sum().item()
+            if size > best_size:
+                best_size = size
+                best_mis = mask.clone()
+                
+        return best_mis
+    
+    def rollout_search_mc(self, logits, edge_index, num_nodes, num_rollouts=64):
+        adj = torch.ones((num_nodes, num_nodes), device=self.device)
+        adj.fill_diagonal_(0)
+        adj[edge_index[0], edge_index[1]] = 0
+        complement_edge_index = adj.nonzero().t()
+        
+        return self.rollout_search_mis(logits, complement_edge_index)
+    
+    def rollout_search_mvc(self, logits, edge_index, num_rollouts=64):
+        mis_equivalent = self.rollout_search_mis(-logits, edge_index, num_rollouts)
+        return 1 - mis_equivalent    
     
     def build_features(self, data):
         for fn in [
@@ -193,25 +190,22 @@ class Model:
         return data
     
 
-    def predict(self, data, repair=True):
-        print(data)
-
+    def predict(self, data):
         data = self.build_features(data)
-        x = data.x.float()
-
-        x = x.float().to(self.device)
+        x = data.x.float().to(self.device)
         edge_index = data.edge_index.to(self.device)
-
 
         with torch.no_grad():
             out = self.net(x, edge_index)
-        mis = (out[:, 0] > 0).long()
-        mvc = (out[:, 1] > 0).long()
-        mc  = (out[:, 2] > 0).long()
-        if repair:
-            mis = self.repair_mis(mis, edge_index, out[:, 0])
-            mvc = self.repair_mvc(mvc, edge_index, out[:, 1])
-            mc  = self.repair_mc(mc, edge_index, out[:, 2])
+            
+        mis_logits = out[:, 0]
+        mvc_logits = out[:, 1]
+        mc_logits  = out[:, 2]
+
+        mis = self.rollout_search_mis(mis_logits, edge_index, num_rollouts=64)
+        mvc = self.rollout_search_mvc(mvc_logits, edge_index, num_rollouts=64)
+        mc = self.rollout_search_mc(mc_logits, edge_index, data.num_nodes, num_rollouts=64)
+        
 
         return {
             "mis": mis.long().cpu(),
