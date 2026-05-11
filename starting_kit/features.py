@@ -20,12 +20,9 @@ def add_degree_feature(data):
     deg_norm = deg / max(data.num_nodes - 1, 1)
     log_deg = torch.log1p(deg)
 
-
-    # Get existing node features
     x = data.x
     if x.dim() == 1:
         x = x.view(-1, 1).float()
-
     data.x = torch.cat([x, deg_norm, log_deg], dim=1)
     return data
 
@@ -55,7 +52,7 @@ def add_mean_neighbor_degree(data):
     x = data.x
     if x.dim() == 1:
         x = x.view(-1, 1).float()
-    data.x = torch.cat([x, mean_neigh_deg, max_neigh_deg], dim=1)
+    data.x = torch.cat([x, torch.log1p(mean_neigh_deg), torch.log1p(max_neigh_deg)], dim=1)
     return data
 
 def add_triangle_count_feature(data):

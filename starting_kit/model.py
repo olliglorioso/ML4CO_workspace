@@ -15,7 +15,7 @@ import networkx as nx
 # ])
 
 FEATURE_COUNT = 6
-HIDDEN_CHANNELS = 128
+HIDDEN_CHANNELS = 256
 NUM_LAYERS = 4
 
 class GIN(nn.Module):
@@ -106,7 +106,7 @@ class Model:
         if x.dim() == 1:
             x = x.view(-1, 1).float()
             
-        data.x = torch.cat([x, mean_neigh_deg, max_neigh_deg], dim=1)
+        data.x = torch.cat([x, torch.log1p(mean_neigh_deg), torch.log1p(max_neigh_deg)], dim=1)
         return data
 
     def add_triangle_count_feature(self, data):
