@@ -15,8 +15,8 @@ import networkx as nx
 # ])
 
 FEATURE_COUNT = 6
-HIDDEN_CHANNELS = 256
-NUM_LAYERS = 5
+HIDDEN_CHANNELS = 128
+NUM_LAYERS = 4
 
 class GIN(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers):
