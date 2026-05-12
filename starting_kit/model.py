@@ -14,12 +14,9 @@ import networkx as nx
 #  [1, 1, 0],   # targets
 # ])
 
-FEATURE_COUNT = 6
-HIDDEN_CHANNELS = 128
-NUM_LAYERS = 4
-
 class GIN(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers):
+        print("Feature count", in_channels, ", hidden channels", hidden_channels, ", num layers", num_layers)
         super(GIN, self).__init__()
 
         self.convs = nn.ModuleList()
@@ -53,12 +50,10 @@ class GIN(nn.Module):
         mc_logit = self.mc_head(x)
         return torch.cat([mis_logit, mvc_logit, mc_logit], dim=-1)
 
-
-
 class Model:
-    def __init__(self, model_dir="./"):
-        self.device = torch.device("cpu")
-        self.net = GIN(FEATURE_COUNT, HIDDEN_CHANNELS, NUM_LAYERS).to(self.device)
+    def __init__(self, model_dir="./", feature_count = 7, hidden_channels = 128, num_layers = 4):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.net = GIN(feature_count, hidden_channels, num_layers).to(self.device)
 
         if model_dir is not None:
             path = os.path.join(model_dir, "model.pt")
@@ -122,9 +117,6 @@ class Model:
         return data
 
     def rollout_search_mis(self, logits, edge_index, num_rollouts=64):
-        """
-        The Master Solver.
-        """
         probs = torch.sigmoid(logits)
         candidates = torch.bernoulli(probs.repeat(num_rollouts, 1)).to(self.device)
         

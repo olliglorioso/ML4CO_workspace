@@ -15,12 +15,12 @@ from torch_geometric.nn import GATv2Conv
 #  [1, 1, 0],   # targets
 # ])
 
-FEATURE_COUNT = 8
+FEATURE_COUNT = 7
 HIDDEN_CHANNELS = 128
 NUM_LAYERS = 4
 
 class GATv2Net(nn.Module):
-    def __init__(self, in_channels, hidden_channels, num_layers, heads=4):
+    def __init__(self, in_channels=FEATURE_COUNT, hidden_channels=HIDDEN_CHANNELS, num_layers=NUM_LAYERS, heads=4):
         super().__init__()
 
         self.convs = nn.ModuleList()
