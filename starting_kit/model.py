@@ -183,6 +183,61 @@ class Model:
             data = fn(data)
         return data
     
+    def solve_mis_algorithm_3(self, data, time_budget=10): # https://arxiv.org/pdf/1810.10659
+        start_time = time.time()
+        best_sol = torch.zeros(data.num_nodes, dtype=torch.long)
+        best_size = -1
+        queue = [(data, torch.zeros(data.num_nodes, dtype=torch.long), torch.arange(data.num_nodes))]
+
+        while time.time() - start_time < time_budget:
+            if not queue: break
+            
+            idx = random.randrange(len(queue))
+            g_prime, current_sol, mapping = queue.pop(idx)
+            
+            with torch.no_grad():
+                logits_m, _, _ = self.net(g_prime.x.float().to(self.device), 
+                                         g_prime.edge_index.to(self.device))
+
+            for m in range(M):
+                v_sorted = torch.argsort(logits_m[:, m], descending=True)
+                
+                temp_sol = current_sol.clone()
+                labeled_nodes = torch.zeros(g_prime.num_nodes, dtype=torch.bool)
+                
+                for v_idx in v_sorted:
+                    v_idx = v_idx.item()
+                    if labeled_nodes[v_idx]:
+                        continue
+                    
+                    temp_sol[mapping[v_idx]] = 1
+                    labeled_nodes[v_idx] = True
+                    
+                    row, col = g_prime.edge_index
+                    neighbors = col[row == v_idx]
+                    labeled_nodes[neighbors] = True
+                    
+                    if labeled_nodes.sum() > max(1, g_prime.num_nodes // 5):
+                        break
+                
+                if labeled_nodes.all():
+                    size = temp_sol.sum().item()
+                    if size > best_size:
+                        best_size = size
+                        best_sol = temp_sol
+                else:
+                    remaining = torch.where(~labeled_nodes)[0]
+                    new_edge_index, _ = subgraph(remaining, g_prime.edge_index, relabel_nodes=True)
+                    
+                    new_g_prime = g_prime.clone()
+                    new_g_prime.x = g_prime.x[remaining]
+                    new_g_prime.edge_index = new_edge_index
+                    new_g_prime.num_nodes = len(remaining)
+                    
+                    queue.append((new_g_prime, temp_sol, mapping[remaining]))
+
+        return best_sol
+        
 
     def predict(self, data):
         data = self.build_features(data)
@@ -196,8 +251,8 @@ class Model:
         mvc_logits = out[:, 1]
         mc_logits  = out[:, 2]
 
-        mis = self.rollout_search_mis(mis_logits, edge_index, num_rollouts=64)
-        mvc = self.rollout_search_mvc(mvc_logits, edge_index, num_rollouts=64)
+        mis = self.solve_mis_algorithm_3(data, time_budget=2)
+        mvc = 1 - mis
         mc = self.rollout_search_mc(mc_logits, edge_index, data.num_nodes, num_rollouts=64)
         
 
