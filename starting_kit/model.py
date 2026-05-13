@@ -13,7 +13,9 @@ import networkx as nx
 #  [0, 2, 3],   # sources
 #  [1, 1, 0],   # targets
 # ])
-
+FEATURE_COUNT = 7 
+HIDDEN_CHANNELS = 64
+NUM_LAYERS = 3
 class GIN(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers):
         print("Feature count", in_channels, ", hidden channels", hidden_channels, ", num layers", num_layers)
@@ -51,7 +53,7 @@ class GIN(nn.Module):
         return torch.cat([mis_logit, mvc_logit, mc_logit], dim=-1)
 
 class Model:
-    def __init__(self, model_dir="./", feature_count = 7, hidden_channels = 128, num_layers = 4):
+    def __init__(self, model_dir="./", feature_count = FEATURE_COUNT, hidden_channels = HIDDEN_CHANNELS, num_layers = NUM_LAYERS):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.net = GIN(feature_count, hidden_channels, num_layers).to(self.device)
 
