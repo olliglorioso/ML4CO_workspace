@@ -65,3 +65,12 @@ def add_triangle_count_feature(data):
         x = x.view(-1, 1).float()
     data.x = torch.cat([x, tri_feat], dim=1)
     return data
+
+def add_core_number_feature(data):
+    G = to_networkx(data, to_undirected=True)
+    G.remove_edges_from(nx.selfloop_edges(G))
+    core_dict = nx.core_number(G)
+    N = data.num_nodes
+    core_feat = torch.tensor([core_dict[i] for i in range(N)], dtype=torch.float).view(-1, 1).to(data.x.device)
+    data.x = torch.cat([data.x, core_feat], dim=1)
+    return data
