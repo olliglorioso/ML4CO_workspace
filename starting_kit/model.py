@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GINConv, MLP
 import os
+import time
 from torch_geometric.utils import degree
 from torch_geometric.utils import to_networkx
 import networkx as nx
@@ -45,7 +46,7 @@ class GIN(nn.Module):
         return torch.cat([mis_logit, mvc_logit, mc_logit], dim=-1)
 
 class Model:
-    def __init__(self, model_dir="./", feature_count = 6, hidden_channels = 128, num_layers = 3):
+    def __init__(self, model_dir="./", feature_count = 6, hidden_channels = 128, num_layers = 4):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.net = GIN(feature_count, hidden_channels, num_layers).to(self.device)
 
@@ -203,7 +204,7 @@ class Model:
                 idx = i.item()
                 
                 if step_labeled_mask[idx]:
-                    continue
+                    break
                     
                 global_labels[curr_mapping[idx]] = 1
                 step_labeled_mask[idx] = True
@@ -232,27 +233,90 @@ class Model:
         global_labels[global_labels == -1] = 1
         return global_labels
 
+    def tree_search_mis(self, data, time_budget=2.0, M=8, max_queue_size=128):
+        N = data.num_nodes
+        best_labels = self.recursive_basic_mis(data)
+        best_size = best_labels.sum().item()
+        queue = [(
+            data.x.float().to(self.device),
+            data.edge_index.to(self.device),
+            torch.arange(N, device=self.device),
+            torch.full((N,), -1, dtype=torch.long, device=self.device),
+        )]
+        end_time = time.time() + time_budget
+
+        while queue and time.time() < end_time:
+            pop_idx = torch.randint(len(queue), (1,)).item()
+            curr_x, curr_edge_index, curr_mapping, base_labels = queue.pop(pop_idx)
+
+            for m in range(M):
+                if time.time() >= end_time:
+                    break
+
+                labels = base_labels.clone()
+                step_labeled_mask = torch.zeros(curr_mapping.numel(), dtype=torch.bool, device=self.device)
+
+                with torch.no_grad():
+                    out = self.net(curr_x, curr_edge_index)
+                    scores = out[:, 0]
+
+                if m > 0:
+                    scores = scores + torch.randn_like(scores) * (0.01 * m)
+
+                v_sorted = torch.argsort(scores, descending=True)
+                row, col = curr_edge_index
+
+                for i in v_sorted:
+                    idx = i.item()
+
+                    if step_labeled_mask[idx]:
+                        break
+
+                    labels[curr_mapping[idx]] = 1
+                    step_labeled_mask[idx] = True
+                    neighbors = col[row == idx]
+
+                    labels[curr_mapping[neighbors]] = 0
+                    step_labeled_mask[neighbors] = True
+
+                remaining_mask = ~step_labeled_mask
+
+                if not remaining_mask.any():
+                    size = labels.sum().item()
+                    if size > best_size:
+                        best_size = size
+                        best_labels = labels.clone()
+                else:
+                    remaining_indices = torch.where(remaining_mask)[0]
+                    new_edge_index, _ = subgraph(
+                        remaining_indices,
+                        curr_edge_index,
+                        relabel_nodes=True,
+                        num_nodes=len(curr_mapping)
+                    )
+                    queue.append((
+                        curr_x[remaining_indices],
+                        new_edge_index,
+                        curr_mapping[remaining_indices],
+                        labels,
+                    ))
+                    if len(queue) > max_queue_size:
+                        queue.pop(0)
+
+        return best_labels
+
     def predict(self, data):
-        data = data.to(self.device)
+        data = data.clone().to(self.device)
         data = self.build_features(data)
-        x = data.x.float().to(self.device)
-        edge_index = data.edge_index.to(self.device)
         
         comp_data = data.clone()
-
-        with torch.no_grad():
-            out = self.net(x, edge_index)
-            
-        mis_logits = out[:, 0]
-        mvc_logits = out[:, 1]
-        mc_logits  = out[:, 2]
         
         #mis = self.grasp_mis(logits=mis_logits, edge_index=edge_index, num_candidates=256)
-        mis = self.recursive_basic_mis(data)
+        #mis = self.recursive_basic_mis(data)
+        mis = self.tree_search_mis(data)
         mvc = 1 - mis
-        
         comp_data.edge_index = self.get_complement(data)
-        mc = self.recursive_basic_mis(comp_data)
+        mc = self.tree_search_mis(comp_data)
         #mc = self.grasp_mc(mc_logits, edge_index, data.num_nodes, num_candidates=256)
 
         return {
