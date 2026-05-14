@@ -9,7 +9,6 @@ import networkx as nx
 from torch_geometric.utils import subgraph
 
 
-
 class GIN(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers):
         super(GIN, self).__init__()
@@ -111,15 +110,15 @@ class Model:
         data.x = torch.cat([x, tri_feat], dim=1)
         return data
 
-    def rollout_search_mis(self, logits, edge_index, num_rollouts=64):
+    def grasp_mis(self, logits, edge_index, num_candidates=64):
         probs = torch.sigmoid(logits)
-        candidates = torch.bernoulli(probs.repeat(num_rollouts, 1)).to(self.device)
+        candidates = torch.bernoulli(probs.repeat(num_candidates, 1)).to(self.device)
         
         best_mis = None
         best_size = -1
         row, col = edge_index
         
-        for i in range(num_rollouts):
+        for i in range(num_candidates):
             mask = candidates[i]
             
             changed = True
@@ -154,22 +153,7 @@ class Model:
                 best_mis = mask.clone()
                 
         return best_mis
-    
-    def rollout_search_mc(self, logits, edge_index, num_nodes, num_rollouts=64):
-        adj = torch.ones((num_nodes, num_nodes), device=self.device)
-        adj.fill_diagonal_(0)
-        adj[edge_index[0], edge_index[1]] = 0
-        complement_edge_index = adj.nonzero().t()
         
-        return self.rollout_search_mis(logits, complement_edge_index)
-    
-    def rollout_search_mvc(self, logits, edge_index, num_rollouts=64):
-        mis_equivalent = self.rollout_search_mis(-logits, edge_index, num_rollouts)
-        return 1 - mis_equivalent    
-    
-    
-        
-    
     def build_features(self, data):
         for fn in [
             self.add_degree_feature,
@@ -180,12 +164,81 @@ class Model:
         return data
         
 
+    def recursive_basic_mc(self, logits, edge_index, num_nodes, num_candidates=64):
+        adj = torch.ones((num_nodes, num_nodes), device=self.device)
+        adj.fill_diagonal_(0)
+        adj[edge_index[0], edge_index[1]] = 0
+        complement_edge_index = adj.nonzero().t()
+        
+        return self.grasp_mis(logits, complement_edge_index)        
+
+    def get_complement(self, data):
+        edge_index = data.edge_index
+        num_nodes = data.num_nodes
+        device = self.device
+        adj = torch.zeros((num_nodes, num_nodes), dtype=torch.bool, device=device)
+        adj[edge_index[0], edge_index[1]] = True
+        comp_adj = ~adj
+        comp_adj.fill_diagonal_(False)
+        return comp_adj.nonzero(as_tuple=False).t().long().contiguous()
+    
+    def recursive_basic_mis(self, data): #https://arxiv.org/pdf/1810.10659
+        N = data.num_nodes
+        global_labels = torch.full((N,), -1, dtype=torch.long, device=self.device)
+        
+        curr_x = data.x.float().to(self.device)
+        curr_edge_index = data.edge_index.to(self.device)
+        
+        curr_mapping = torch.arange(N, device=self.device)
+
+        while curr_mapping.numel() > 0:
+            with torch.no_grad():
+                out = self.net(curr_x, curr_edge_index)
+                scores = out[:, 0]
+
+            v_sorted = torch.argsort(scores, descending=True)
+            step_labeled_mask = torch.zeros(len(curr_mapping), dtype=torch.bool, device=self.device)
+            
+            for i in v_sorted:
+                idx = i.item()
+                
+                if step_labeled_mask[idx]:
+                    continue
+                    
+                global_labels[curr_mapping[idx]] = 1
+                step_labeled_mask[idx] = True
+                row, col = curr_edge_index
+                neighbors = col[row == idx]
+                
+                global_labels[curr_mapping[neighbors]] = 0
+                step_labeled_mask[neighbors] = True
+
+            remaining_mask = ~step_labeled_mask
+            if not remaining_mask.any():
+                break
+                
+            remaining_indices = torch.where(remaining_mask)[0]
+            
+            new_edge_index, _ = subgraph(
+                remaining_indices, 
+                curr_edge_index, 
+                relabel_nodes=True, 
+                num_nodes=len(curr_mapping)
+            )
+            
+            curr_x = curr_x[remaining_indices]
+            curr_edge_index = new_edge_index
+            curr_mapping = curr_mapping[remaining_indices]
+        global_labels[global_labels == -1] = 1
+        return global_labels
+
     def predict(self, data):
         data = data.to(self.device)
         data = self.build_features(data)
         x = data.x.float().to(self.device)
         edge_index = data.edge_index.to(self.device)
         
+        comp_data = data.clone()
 
         with torch.no_grad():
             out = self.net(x, edge_index)
@@ -193,10 +246,14 @@ class Model:
         mis_logits = out[:, 0]
         mvc_logits = out[:, 1]
         mc_logits  = out[:, 2]
-
-        mis = self.rollout_search_mis(logits=mis_logits, edge_index=edge_index, num_rollouts=256)
+        
+        #mis = self.grasp_mis(logits=mis_logits, edge_index=edge_index, num_candidates=256)
+        mis = self.recursive_basic_mis(data)
         mvc = 1 - mis
-        mc = self.rollout_search_mc(mc_logits, edge_index, data.num_nodes, num_rollouts=256)
+        
+        comp_data.edge_index = self.get_complement(data)
+        mc = self.recursive_basic_mis(comp_data)
+        #mc = self.grasp_mc(mc_logits, edge_index, data.num_nodes, num_candidates=256)
 
         return {
             "mis": mis.long().cpu(),
