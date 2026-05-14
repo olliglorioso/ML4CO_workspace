@@ -10,14 +10,6 @@ from torch_geometric.utils import subgraph
 
 
 
-
-# edge_index = tensor([
-#  [0, 2, 3],   # sources
-#  [1, 1, 0],   # targets
-# ])
-FEATURE_COUNT = 7 
-HIDDEN_CHANNELS = 64
-NUM_LAYERS = 4
 class GIN(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers):
         super(GIN, self).__init__()
@@ -54,7 +46,7 @@ class GIN(nn.Module):
         return torch.cat([mis_logit, mvc_logit, mc_logit], dim=-1)
 
 class Model:
-    def __init__(self, model_dir="./", feature_count = FEATURE_COUNT, hidden_channels = HIDDEN_CHANNELS, num_layers = NUM_LAYERS):
+    def __init__(self, model_dir="./", feature_count = 0, hidden_channels = 0, num_layers = 0):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.net = GIN(feature_count, hidden_channels, num_layers).to(self.device)
 
@@ -189,9 +181,11 @@ class Model:
         
 
     def predict(self, data):
+        data = data.to(self.device)
         data = self.build_features(data)
         x = data.x.float().to(self.device)
         edge_index = data.edge_index.to(self.device)
+        
 
         with torch.no_grad():
             out = self.net(x, edge_index)
