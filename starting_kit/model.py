@@ -41,7 +41,7 @@ class GIN(nn.Module):
         return self.mis_head(x).view(-1)
 
 class Model:
-    def __init__(self, model_dir="./", feature_count = 6, hidden_channels = 128, num_layers = 4):
+    def __init__(self, model_dir="./", feature_count = 7, hidden_channels = 64, num_layers = 4):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.net = GIN(feature_count, hidden_channels, num_layers).to(self.device)
 
@@ -106,6 +106,15 @@ class Model:
         data.x = torch.cat([x, tri_feat], dim=1)
         return data
 
+    def add_core_number_feature(self, data):
+        G = to_networkx(data, to_undirected=True)
+        G.remove_edges_from(nx.selfloop_edges(G))
+        core_dict = nx.core_number(G)
+        N = data.num_nodes
+        core_feat = torch.tensor([core_dict[i] for i in range(N)], dtype=torch.float).view(-1, 1).to(data.x.device)
+        data.x = torch.cat([data.x, core_feat], dim=1)
+        return data
+
     def grasp_mis(self, logits, edge_index, num_candidates=64):
         probs = torch.sigmoid(logits)
         candidates = torch.bernoulli(probs.repeat(num_candidates, 1)).to(self.device)
@@ -155,6 +164,7 @@ class Model:
             self.add_degree_feature,
             self.add_mean_neighbor_degree,
             self.add_triangle_count_feature,
+            self.add_core_number_feature,
         ]:
             data = fn(data)
         return data
@@ -231,7 +241,8 @@ class Model:
     def tree_search_mis(self, data, time_budget=2.0, M=8, max_queue_size=128):
         N = data.num_nodes
         best_labels = self.recursive_basic_mis(data)
-        best_size = best_labels.sum().item()
+        weights = data.x[:, 0].float().to(self.device)
+        best_value = (best_labels.float() * weights).sum().item()
         queue = [(
             data.x.float().to(self.device),
             data.edge_index.to(self.device),
@@ -265,9 +276,9 @@ class Model:
                     step_labeled_mask[neighbors] = True
                 remaining_mask = ~step_labeled_mask
                 if not remaining_mask.any():
-                    size = labels.sum().item()
-                    if size > best_size:
-                        best_size = size
+                    value = (labels.float() * weights).sum().item()
+                    if value > best_value:
+                        best_value = value
                         best_labels = labels.clone()
                 else:
                     remaining_indices = torch.where(remaining_mask)[0]
