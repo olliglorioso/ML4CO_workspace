@@ -31,8 +31,6 @@ class GIN(nn.Module):
             self.batch_norms.append(nn.BatchNorm1d(hidden_channels))
 
         self.mis_head = MLP([hidden_channels, hidden_channels, hidden_channels, 1])
-        self.mvc_head = MLP([hidden_channels, hidden_channels, hidden_channels, 1])
-        self.mc_head = MLP([hidden_channels, hidden_channels, hidden_channels, 1])
 
     def forward(self, x, edge_index):
         for conv, bn in zip(self.convs, self.batch_norms):
@@ -40,10 +38,7 @@ class GIN(nn.Module):
             x = bn(x)
             x = F.relu(x)
 
-        mis_logit = self.mis_head(x)
-        mvc_logit = self.mvc_head(x)
-        mc_logit = self.mc_head(x)
-        return torch.cat([mis_logit, mvc_logit, mc_logit], dim=-1)
+        return self.mis_head(x).view(-1)
 
 class Model:
     def __init__(self, model_dir="./", feature_count = 6, hidden_channels = 128, num_layers = 4):
@@ -53,7 +48,7 @@ class Model:
         if model_dir is not None:
             path = os.path.join(model_dir, "model.pt")
             if os.path.exists(path):
-                self.net.load_state_dict(torch.load(path, map_location=self.device))
+                self.net.load_state_dict(torch.load(path, map_location=self.device), strict=False)
 
         self.net.eval()
     
@@ -194,8 +189,8 @@ class Model:
 
         while curr_mapping.numel() > 0:
             with torch.no_grad():
-                out = self.net(curr_x, curr_edge_index)
-                scores = out[:, 0]
+                logits = self.net(curr_x, curr_edge_index)
+                scores = logits
 
             v_sorted = torch.argsort(scores, descending=True)
             step_labeled_mask = torch.zeros(len(curr_mapping), dtype=torch.bool, device=self.device)
@@ -244,43 +239,31 @@ class Model:
             torch.full((N,), -1, dtype=torch.long, device=self.device),
         )]
         end_time = time.time() + time_budget
-
         while queue and time.time() < end_time:
             pop_idx = torch.randint(len(queue), (1,)).item()
             curr_x, curr_edge_index, curr_mapping, base_labels = queue.pop(pop_idx)
-
             for m in range(M):
                 if time.time() >= end_time:
                     break
-
                 labels = base_labels.clone()
                 step_labeled_mask = torch.zeros(curr_mapping.numel(), dtype=torch.bool, device=self.device)
-
                 with torch.no_grad():
-                    out = self.net(curr_x, curr_edge_index)
-                    scores = out[:, 0]
-
+                    logits = self.net(curr_x, curr_edge_index)
+                    scores = logits
                 if m > 0:
                     scores = scores + torch.randn_like(scores) * (0.01 * m)
-
                 v_sorted = torch.argsort(scores, descending=True)
                 row, col = curr_edge_index
-
                 for i in v_sorted:
                     idx = i.item()
-
                     if step_labeled_mask[idx]:
                         break
-
                     labels[curr_mapping[idx]] = 1
                     step_labeled_mask[idx] = True
                     neighbors = col[row == idx]
-
                     labels[curr_mapping[neighbors]] = 0
                     step_labeled_mask[neighbors] = True
-
                 remaining_mask = ~step_labeled_mask
-
                 if not remaining_mask.any():
                     size = labels.sum().item()
                     if size > best_size:
@@ -306,18 +289,16 @@ class Model:
         return best_labels
 
     def predict(self, data):
-        data = data.clone().to(self.device)
-        data = self.build_features(data)
+        raw_data = data.clone().to(self.device)
+        data = self.build_features(raw_data.clone())
         
-        comp_data = data.clone()
-        
-        #mis = self.grasp_mis(logits=mis_logits, edge_index=edge_index, num_candidates=256)
-        #mis = self.recursive_basic_mis(data)
         mis = self.tree_search_mis(data)
         mvc = 1 - mis
-        comp_data.edge_index = self.get_complement(data)
+
+        comp_data = raw_data.clone()
+        comp_data.edge_index = self.get_complement(raw_data)
+        comp_data = self.build_features(comp_data)
         mc = self.tree_search_mis(comp_data)
-        #mc = self.grasp_mc(mc_logits, edge_index, data.num_nodes, num_candidates=256)
 
         return {
             "mis": mis.long().cpu(),
