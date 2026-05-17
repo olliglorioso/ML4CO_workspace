@@ -31,6 +31,8 @@ class GIN(nn.Module):
             self.batch_norms.append(nn.BatchNorm1d(hidden_channels))
 
         self.mis_head = MLP([hidden_channels, hidden_channels, hidden_channels, 1])
+        self.mvc_head = MLP([hidden_channels, hidden_channels, hidden_channels, 1])
+        self.mc_head = MLP([hidden_channels, hidden_channels, hidden_channels, 1])
 
     def forward(self, x, edge_index):
         for conv, bn in zip(self.convs, self.batch_norms):
@@ -38,7 +40,10 @@ class GIN(nn.Module):
             x = bn(x)
             x = F.relu(x)
 
-        return self.mis_head(x).view(-1)
+        mis_logit = self.mis_head(x)
+        mvc_logit = self.mvc_head(x)
+        mc_logit = self.mc_head(x)
+        return torch.cat([mis_logit, mvc_logit, mc_logit], dim=-1)
 
 class Model:
     def __init__(self, model_dir="./", feature_count = 7, hidden_channels = 64, num_layers = 4):
@@ -115,12 +120,17 @@ class Model:
         data.x = torch.cat([data.x, core_feat], dim=1)
         return data
 
-    def grasp_mis(self, logits, edge_index, num_candidates=64):
+    def grasp_mis(self, logits, edge_index, num_candidates=64, weights=None):
         probs = torch.sigmoid(logits)
         candidates = torch.bernoulli(probs.repeat(num_candidates, 1)).to(self.device)
+        if weights is not None:
+            weights = weights.float().to(self.device)
+            node_scores = logits + torch.log1p(weights)
+        else:
+            node_scores = logits
         
         best_mis = None
-        best_size = -1
+        best_value = -1
         row, col = edge_index
         
         for i in range(num_candidates):
@@ -133,7 +143,7 @@ class Model:
                 if conflicts.any():
                     rr = row[conflicts]
                     cc = col[conflicts]
-                    drop_r = logits[rr] <= logits[cc]
+                    drop_r = node_scores[rr] <= node_scores[cc]
                     drop_nodes = torch.where(drop_r, rr, cc)
                     mask[drop_nodes] = 0
                     changed = True
@@ -146,19 +156,20 @@ class Model:
                 
                 available = (mask == 0) & (sel_neighbors == 0)
                 if available.any():
-                    avail_logits = logits.clone()
-                    avail_logits[~available] = -float('inf')
-                    best_node = avail_logits.argmax()
+                    avail_scores = node_scores.clone()
+                    avail_scores[~available] = -float('inf')
+                    best_node = avail_scores.argmax()
                     mask[best_node] = 1
                     changed = True
                     
-            size = mask.sum().item()
-            if size > best_size:
-                best_size = size
+            value = (mask.float() * weights).sum().item() if weights is not None else mask.sum().item()
+            if value > best_value:
+                best_value = value
                 best_mis = mask.clone()
                 
         return best_mis
-        
+
+
     def build_features(self, data):
         for fn in [
             self.add_degree_feature,
@@ -199,8 +210,8 @@ class Model:
 
         while curr_mapping.numel() > 0:
             with torch.no_grad():
-                logits = self.net(curr_x, curr_edge_index)
-                scores = logits
+                out = self.net(curr_x, curr_edge_index)
+                scores = out[:, 0]
 
             v_sorted = torch.argsort(scores, descending=True)
             step_labeled_mask = torch.zeros(len(curr_mapping), dtype=torch.bool, device=self.device)
@@ -238,7 +249,7 @@ class Model:
         global_labels[global_labels == -1] = 1
         return global_labels
 
-    def tree_search_mis(self, data, time_budget=2.0, M=8, max_queue_size=128):
+    def tree_search_mis(self, data, time_budget=5.0, M=16, max_queue_size=256):
         N = data.num_nodes
         best_labels = self.recursive_basic_mis(data)
         weights = data.x[:, 0].float().to(self.device)
@@ -259,8 +270,8 @@ class Model:
                 labels = base_labels.clone()
                 step_labeled_mask = torch.zeros(curr_mapping.numel(), dtype=torch.bool, device=self.device)
                 with torch.no_grad():
-                    logits = self.net(curr_x, curr_edge_index)
-                    scores = logits
+                    out = self.net(curr_x, curr_edge_index)
+                    scores = out[:, 0]
                 if m > 0:
                     scores = scores + torch.randn_like(scores) * (0.01 * m)
                 v_sorted = torch.argsort(scores, descending=True)
@@ -298,18 +309,31 @@ class Model:
                         queue.pop(0)
 
         return best_labels
+    
+    def grasp_mc(self, logits, edge_index, num_nodes, num_candidates=128, weights=None):
+        adj = torch.ones((num_nodes, num_nodes), device=self.device)
+        adj.fill_diagonal_(0)
+        adj[edge_index[0], edge_index[1]] = 0
+        complement_edge_index = adj.nonzero().t()
+        return self.grasp_mis(logits, complement_edge_index, num_candidates, weights)
 
     def predict(self, data):
-        raw_data = data.clone().to(self.device)
-        data = self.build_features(raw_data.clone())
-        
-        mis = self.tree_search_mis(data)
-        mvc = 1 - mis
+        data = self.build_features(data)
+        x = data.x.float().to(self.device)
+        edge_index = data.edge_index.to(self.device)
 
-        comp_data = raw_data.clone()
-        comp_data.edge_index = self.get_complement(raw_data)
-        comp_data = self.build_features(comp_data)
-        mc = self.tree_search_mis(comp_data)
+        with torch.no_grad():
+            out = self.net(x, edge_index)
+
+        mis_logits = out[:, 0]
+        mvc_logits = out[:, 1]
+        mc_logits = out[:, 2]
+        weights = x[:, 0]
+        
+
+        mis = self.grasp_mis(mis_logits, edge_index, num_candidates=256, weights=weights)
+        mvc = 1 - self.grasp_mis(-mvc_logits, edge_index, num_candidates=256, weights=weights)
+        mc = self.grasp_mc(mc_logits, edge_index, data.num_nodes, num_candidates=256, weights=weights)
 
         return {
             "mis": mis.long().cpu(),
