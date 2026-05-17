@@ -46,7 +46,7 @@ class GIN(nn.Module):
         return torch.cat([mis_logit, mvc_logit, mc_logit], dim=-1)
 
 class Model:
-    def __init__(self, model_dir="./", feature_count = 7, hidden_channels = 64, num_layers = 4):
+    def __init__(self, model_dir="./", feature_count = 7, hidden_channels = 128, num_layers = 4):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.net = GIN(feature_count, hidden_channels, num_layers).to(self.device)
 
@@ -332,7 +332,7 @@ class Model:
         
 
         mis = self.grasp_mis(mis_logits, edge_index, num_candidates=256, weights=weights)
-        mvc = 1 - self.grasp_mis(-mvc_logits, edge_index, num_candidates=256, weights=weights)
+        mvc = 1 - self.grasp_mis(mvc_logits, edge_index, num_candidates=256, weights=weights)
         mc = self.grasp_mc(mc_logits, edge_index, data.num_nodes, num_candidates=256, weights=weights)
 
         return {
