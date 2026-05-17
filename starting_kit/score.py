@@ -2,6 +2,8 @@ import os
 import json
 import torch
 
+from runtime_config import load_runtime_config
+
 def resolve_path(*parts):
     app_base = "/app"
     if os.path.exists(app_base):
@@ -10,9 +12,9 @@ def resolve_path(*parts):
     local_base = os.path.dirname(os.path.dirname(__file__))
     return os.path.join(local_base, *parts)
 
-PRED_FILE = resolve_path("input", "res", "predictions.pt")
-REF_FILE = resolve_path("input", "ref", "graphs.pt")
-OUTPUT_FILE = resolve_path("output", "scores.json")
+DEFAULT_PRED_FILE = resolve_path("input", "res", "predictions.pt")
+DEFAULT_REF_FILE = resolve_path("input", "ref", "graphs.pt")
+DEFAULT_OUTPUT_FILE = resolve_path("output", "scores.json")
 
 def rel_obj_gap(pred, weights, gt):
     pred_score = (pred.float() * weights).sum()
@@ -32,9 +34,16 @@ def mc_check(pred, edge_index):
 
 
 def main():
+    config = load_runtime_config()
+    path_cfg = config["paths"]
+    scoring_cfg = config["scoring"]
 
-    preds = torch.load(PRED_FILE, weights_only=False)
-    refs = torch.load(REF_FILE, weights_only=False)
+    pred_file = os.environ.get("PRED_FILE") or path_cfg["score_predictions"] or DEFAULT_PRED_FILE
+    ref_file = os.environ.get("REF_FILE") or path_cfg["score_reference"] or DEFAULT_REF_FILE
+    output_file = os.environ.get("SCORES_FILE") or path_cfg["score_output"] or DEFAULT_OUTPUT_FILE
+
+    preds = torch.load(pred_file, weights_only=False)
+    refs = torch.load(ref_file, weights_only=False)
 
     mis_scores = []
     mvc_scores = []
@@ -76,10 +85,14 @@ def main():
         "MC_feasibility": mc_feas,
     }
 
+    if scoring_cfg.get("include_model_config", True):
+        scores["model_config"] = config["model"]
+
     for key, val in scores.items():
         print(f"Key : {key} - type : {type(val)}")
 
-    with open(OUTPUT_FILE, "w") as f:
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    with open(output_file, "w") as f:
         json.dump(scores, f)
 
 
