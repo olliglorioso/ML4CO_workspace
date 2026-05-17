@@ -19,9 +19,10 @@ from torch_geometric.utils import subgraph
 FEATURE_COUNT = 7
 HIDDEN_CHANNELS = 64
 NUM_LAYERS = 4
+K_H = 6
 
 class GATv2Net(nn.Module):
-    def __init__(self, in_channels=FEATURE_COUNT, hidden_channels=HIDDEN_CHANNELS, num_layers=NUM_LAYERS, heads=4):
+    def __init__(self, in_channels=FEATURE_COUNT, hidden_channels=HIDDEN_CHANNELS, num_layers=NUM_LAYERS, heads=K_H):
         super().__init__()
 
         self.convs = nn.ModuleList()
