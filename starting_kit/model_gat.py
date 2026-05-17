@@ -342,9 +342,9 @@ class Model:
         weights = x[:, 0]
         
 
-        mis = self.grasp_mis(mis_logits, edge_index, num_candidates=256, weights=weights)
-        mvc = 1 - self.grasp_mis(mvc_logits, edge_index, num_candidates=256, weights=weights)
-        mc = self.grasp_mc(mc_logits, edge_index, data.num_nodes, num_candidates=256, weights=weights)
+        mis = self.grasp_mis(mis_logits, edge_index, num_candidates=512, weights=weights)
+        mvc = 1 - self.grasp_mis(-mvc_logits, edge_index, num_candidates=512, weights=weights)
+        mc = self.grasp_mc(mc_logits, edge_index, data.num_nodes, num_candidates=512, weights=weights)
 
         return {
             "mis": mis.long().cpu(),
