@@ -22,11 +22,12 @@ NUM_LAYERS = 4
 K_H = 4
 
 class GATv2Net(nn.Module):
-    def __init__(self, in_channels=FEATURE_COUNT, hidden_channels=HIDDEN_CHANNELS, num_layers=NUM_LAYERS, heads=K_H):
+    def __init__(self, in_channels=FEATURE_COUNT, hidden_channels=HIDDEN_CHANNELS, num_layers=NUM_LAYERS, heads=K_H, dropout=0.2):
         super().__init__()
 
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
+        self.dropout = dropout
 
         for i in range(num_layers):
             in_dim = in_channels if i == 0 else hidden_channels * heads
@@ -36,7 +37,7 @@ class GATv2Net(nn.Module):
                 hidden_channels,
                 heads=heads,
                 concat=True,
-                dropout=0.2
+                dropout=dropout
             )
 
             self.convs.append(conv)
@@ -58,9 +59,9 @@ class GATv2Net(nn.Module):
 
 
 class Model:
-    def __init__(self, model_dir="./", feature_count = 7, hidden_channels = 64, num_layers = 4):
+    def __init__(self, model_dir="./", feature_count = 7, hidden_channels = 64, num_layers = 4, dropout=0.2):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.net = GATv2Net(feature_count, hidden_channels, num_layers).to(self.device)
+        self.net = GATv2Net(feature_count, hidden_channels, num_layers, dropout=dropout).to(self.device)
 
         if model_dir is not None:
             path = os.path.join(model_dir, "model.pt")
