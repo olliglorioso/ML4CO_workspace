@@ -33,9 +33,23 @@ def mc_check(pred, edge_index):
     return (torch.logical_and(pred[edge_index[0]], pred[edge_index[1]]).sum() == pred.sum() * (pred.sum() - 1)).float()
 
 
+def select_graph_subset(graphs, start_index=0, sample_count=None):
+    total = len(graphs)
+    start_index = max(0, int(start_index))
+
+    if sample_count is None:
+        end_index = total
+    else:
+        sample_count = max(0, int(sample_count))
+        end_index = min(total, start_index + sample_count)
+
+    return graphs[start_index:end_index], total, start_index, end_index
+
+
 def main():
     config = load_runtime_config()
     path_cfg = config["paths"]
+    data_cfg = config["data"]
     scoring_cfg = config["scoring"]
 
     pred_file = os.environ.get("PRED_FILE") or path_cfg["score_predictions"] or DEFAULT_PRED_FILE
@@ -44,6 +58,18 @@ def main():
 
     preds = torch.load(pred_file, weights_only=False)
     refs = torch.load(ref_file, weights_only=False)
+    refs, total_refs, start_index, end_index = select_graph_subset(
+        refs,
+        start_index=data_cfg.get("start_index", 0),
+        sample_count=data_cfg.get("sample_count"),
+    )
+
+    if len(preds) != len(refs):
+        raise ValueError(
+            "Prediction/reference length mismatch after applying the configured data slice: "
+            f"{len(preds)} predictions vs {len(refs)} reference graphs "
+            f"(slice {start_index}:{end_index} from {total_refs} total graphs)."
+        )
 
     mis_scores = []
     mvc_scores = []
@@ -87,6 +113,12 @@ def main():
 
     if scoring_cfg.get("include_model_config", True):
         scores["model_config"] = config["model"]
+    scores["data_slice"] = {
+        "total_reference_graphs": total_refs,
+        "start_index": start_index,
+        "end_index": end_index,
+        "scored_graphs": len(refs),
+    }
 
     for key, val in scores.items():
         print(f"Key : {key} - type : {type(val)}")

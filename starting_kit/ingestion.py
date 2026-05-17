@@ -30,10 +30,24 @@ def maybe_prepare_checkpoint(model_dir, model_filename):
     return model_path if model_path.exists() else canonical_path
 
 
+def select_graph_subset(graphs, start_index=0, sample_count=None):
+    total = len(graphs)
+    start_index = max(0, int(start_index))
+
+    if sample_count is None:
+        end_index = total
+    else:
+        sample_count = max(0, int(sample_count))
+        end_index = min(total, start_index + sample_count)
+
+    return graphs[start_index:end_index], total, start_index, end_index
+
+
 def main():
     config = load_runtime_config()
     model_cfg = config["model"]
     path_cfg = config["paths"]
+    data_cfg = config["data"]
 
     if model_cfg.get("model_type") not in (None, "GIN"):
         raise ValueError(
@@ -61,9 +75,14 @@ def main():
 
     model = Model(**model_kwargs)
     graphs = torch.load(input_file, weights_only=False)
+    selected_graphs, total_graphs, start_index, end_index = select_graph_subset(
+        graphs,
+        start_index=data_cfg.get("start_index", 0),
+        sample_count=data_cfg.get("sample_count"),
+    )
 
     predictions = []
-    for data in graphs:
+    for data in selected_graphs:
         predictions.append(model.predict(data))
 
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
@@ -72,6 +91,11 @@ def main():
     print("Loaded runtime model configuration:")
     for key, value in model_cfg.items():
         print(f"  {key}: {value}")
+    print("Selected data slice:")
+    print(f"  total_graphs: {total_graphs}")
+    print(f"  start_index: {start_index}")
+    print(f"  end_index: {end_index}")
+    print(f"  predicted_graphs: {len(selected_graphs)}")
     print(f"Predictions written to: {output_file}")
 
 
