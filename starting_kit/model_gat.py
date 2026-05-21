@@ -71,7 +71,7 @@ class Model:
                 features = ckpt["feature_count"]
                 layers = ckpt["num_layers"]
                 dropout = ckpt["dropout"]
-                self.net = GraphSAGENet(features, hiddens, layers, dropout).to(self.device)
+                self.net = GATv2Net(features, hiddens, layers, dropout).to(self.device)
                 self.net.load_state_dict(ckpt["model_state_dict"], strict=False)
 
 
