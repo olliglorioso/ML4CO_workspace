@@ -66,7 +66,14 @@ class Model:
         if model_dir is not None:
             path = os.path.join(model_dir, "model.pt")
             if os.path.exists(path):
-                self.net.load_state_dict(torch.load(path, map_location=self.device), strict=False)
+                ckpt = torch.load(path)
+                hiddens = ckpt["hidden_channels"]
+                features = ckpt["feature_count"]
+                layers = ckpt["num_layers"]
+                dropout = ckpt["dropout"]
+                self.net = GraphSAGENet(features, hiddens, layers, dropout).to(self.device)
+                self.net.load_state_dict(ckpt["model_state_dict"], strict=False)
+
 
         self.net.eval()
     

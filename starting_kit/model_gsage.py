@@ -21,7 +21,8 @@ class GraphSAGENet(nn.Module):
         self,
         in_channels=FEATURE_COUNT,
         hidden_channels=HIDDEN_CHANNELS,
-        num_layers=NUM_LAYERS
+        num_layers=NUM_LAYERS,
+        dropout=0.2,
     ):
         super().__init__()
 
@@ -51,12 +52,18 @@ class GraphSAGENet(nn.Module):
 class Model:
     def __init__(self, model_dir="./", feature_count=7, hidden_channels=256, num_layers=5):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.net = GraphSAGENet(feature_count, hidden_channels, num_layers).to(self.device)
+        self.net = GraphSAGENet(feature_count, hidden_channels, num_layers, dropout).to(self.device)
 
         if model_dir is not None:
             path = os.path.join(model_dir, "model.pt")
             if os.path.exists(path):
-                self.net.load_state_dict(torch.load(path, map_location=self.device), strict=False)
+                ckpt = torch.load(path)
+                hiddens = ckpt["hidden_channels"]
+                features = ckpt["feature_count"]
+                layers = ckpt["num_layers"]
+                dropout = ckpt["dropout"]
+                self.net = GraphSAGENet(features, hiddens, layers, dropout).to(self.device)
+                self.net.load_state_dict(ckpt["model_state_dict"], strict=False)
 
         self.net.eval()
 
