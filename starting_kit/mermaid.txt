@@ -1,0 +1,91 @@
+%%{init: {'themeVariables': { 'textColor': '#000000', 'fontSize': '15px', 'clusterBkg': '#f9fafb', 'clusterBorder': '#94a3b8', 'edgeLabelBackground': '#ffffff'}}}%%
+flowchart TB
+    subgraph Stage1["1. Feature Engineering"]
+        F["Feature Extractor"]
+        G[("G = (V, E) \n Features")]
+        F0["Node Weight x_0"]
+        F1["Log / Norm Node Degrees"]
+        F2["Mean / Max Neighbor Degrees"]
+        F3["Triangle Count"]
+        F4["K-core Number"]
+        X["Feature Matrix X<br/>7 Dimensions"]
+    end
+    
+    subgraph Stage2["2. Message Passing Architecture"]
+        MP1["GNN Layer 1"]
+        MP2["GNN Layer 2 ... L"]
+        H["Final Node Embeddings h"]
+    end
+    
+    subgraph Stage3["3. Prediction Heads & Training"]
+        M1["MLP Head:<br/>Maximum Independent Set (MIS)"]
+        M2["MLP Head:<br/>Minimum Vertex Cover (MVC)"]
+        M3["MLP Head:<br/>Maximum Clique (MC)"]
+        P1(["Raw Logits:<br/>MIS"])
+        P2(["Raw Logits:<br/>MVC"])
+        P3(["Raw Logits:<br/>MC"])
+        L["Binary Cross Entropy Loss<br/>vs Ground Truth Labels"]
+    end
+    
+    subgraph Stage4["4. Combinatorial Search & Post-Processing"]
+        Alg1["GRASP/BasicMIS/TreeMIS"]
+        Alg2["GRASP/BasicMIS/TreeMIS"]
+        Alg3["GRASP/BasicMIS/TreeMIS"]
+        Trans2["Repair: 1 - MIS"]
+        Out1[/"Feasible MIS Set"/]
+        Out2[/"Feasible MVC Set"/]
+        Out3[/"Feasible MC Set"/]
+    end
+
+    %% Connections
+    G --> F
+    F --> F0 & F1 & F2 & F3 & F4
+    F0 --> X
+    F1 --> X
+    F2 --> X
+    F3 --> X
+    F4 --> X
+    X --> MP1
+    
+    G -. "Original Edge Index" .-> MP1
+    MP1 -- "GIN / GATv2 / GraphSAGE" --> MP2
+    MP2 --> H
+    
+    H --> M1 & M2 & M3
+    M1 --> P1
+    M2 --> P2
+    M3 --> P3
+    
+    P1 -.-> L
+    P2 -.-> L
+    P3 -.-> L
+    
+    P1 --> Alg1
+    P2 --> Alg2
+    P3 --> Alg3
+    
+    %% Split grouped dotted edges for VS Code stability
+    G -. "Original Edge Index" .-> Alg1
+    G -. "Original Edge Index" .-> Alg2
+    G -. "Complement Adjacency" .-> Alg3
+    
+    X -. "Node Features" .-> Alg1
+    X -. "Node Features" .-> Alg2
+    X -. "Node Features" .-> Alg3
+    
+    Alg1 --> Out1
+    Alg2 --> Trans2
+    Trans2 --> Out2
+    Alg3 --> Out3
+
+    %% Styling
+    classDef default color:#000000;
+    classDef data fill:#e1bee7,stroke:#8e24aa,stroke-width:2px,color:#000000;
+    classDef process fill:#bbdefb,stroke:#1e88e5,stroke-width:2px,color:#000000;
+    classDef output fill:#c8e6c9,stroke:#43a047,stroke-width:2px,color:#000000;
+    classDef loss fill:#ffccbc,stroke:#e64a19,stroke-width:2px,stroke-dasharray:5 5,color:#000000;
+
+    class G,X,P1,P2,P3,H data;
+    class F,F0,F1,F2,F3,F4,MP1,MP2,M1,M2,M3,Alg1,Alg2,Alg3,Trans2 process;
+    class Out1,Out2,Out3 output;
+    class L loss;
