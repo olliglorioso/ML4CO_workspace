@@ -21,7 +21,7 @@ class GIN(nn.Module):
             in_dim = in_channels if i == 0 else hidden_channels
 
             mlp = nn.Sequential(
-                nn.Linear(in_dim, hidden_channels), # take 7 raw features and project to 128-dim space
+                nn.Linear(in_dim, hidden_channels), #
                 nn.ReLU(),
                 nn.Identity(),
                 nn.Linear(hidden_channels, hidden_channels)
