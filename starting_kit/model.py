@@ -21,7 +21,7 @@ class GIN(nn.Module):
             in_dim = in_channels if i == 0 else hidden_channels
 
             mlp = nn.Sequential(
-                nn.Linear(in_dim, hidden_channels), # take 7 raw features and project to 128-dim space
+                nn.Linear(in_dim, hidden_channels), #
                 nn.ReLU(),
                 nn.Identity(),
                 nn.Linear(hidden_channels, hidden_channels)
@@ -53,7 +53,12 @@ class Model:
         if model_dir is not None:
             path = os.path.join(model_dir, "model.pt")
             if os.path.exists(path):
-                self.net.load_state_dict(torch.load(path, map_location=self.device), strict=False)
+                ckpt = torch.load(path)
+                hiddens = ckpt["hidden_channels"]
+                features = ckpt["feature_count"]
+                layers = ckpt["num_layers"]
+                self.net = GIN(features, hiddens, layers).to(self.device)
+                self.net.load_state_dict(ckpt["model_state_dict"], strict=False)
 
         self.net.eval()
     
