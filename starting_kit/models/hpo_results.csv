@@ -1,0 +1,3 @@
+trial,model_type,hidden_channels,num_layers,lr,batch_size,epochs,early_stopping,dropout,val_loss
+1,GSAGE,64,4,0.001,16,10,1,0.2,73.70158752441407
+2,GSAGE,64,4,0.001,16,10,1,0.5,76.5489926147461
