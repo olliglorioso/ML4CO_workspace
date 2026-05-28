@@ -274,7 +274,7 @@ class Model:
         if model_dir is not None:
             path = os.path.join(model_dir, "model.pt")
             if os.path.exists(path):
-                ckpt = torch.load(path)
+                ckpt = torch.load(path, map_location="cpu")
                 hiddens = ckpt["hidden_channels"]
                 self.features = ckpt["features"]
                 layers = ckpt["num_layers"]

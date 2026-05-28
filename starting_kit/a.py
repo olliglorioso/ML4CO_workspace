@@ -80,6 +80,8 @@ def run_experiment(config, train_graphs, val_graphs, device):
     }
     if config['model_type'] in {"GAT", "GSAGE"}:
         model_kwargs["dropout"] = config.get('dropout', 0.2)
+        model_kwargs["heads"] = config.get('heads', 0.2)
+
 
     model = model_cls(**model_kwargs).to(device)
 
@@ -92,28 +94,39 @@ def run_experiment(config, train_graphs, val_graphs, device):
     best_val_loss = float("inf")
     patience_counter = 0
 
+    # ===== add smoothing =====
+    smooth_val_loss = None
+    beta = 0.9   # 越大越平滑（0.9~0.99都可以）
+
     for epoch in range(config['epochs']):
         train_loss = train_one_epoch(model, train_loader, optimizer, device)
         val_loss = validate(model, val_loader, device)
 
-        scheduler.step(val_loss)
+        # ===== EMA smoothing =====
+        if smooth_val_loss is None:
+            smooth_val_loss = val_loss
+        else:
+            smooth_val_loss = beta * smooth_val_loss + (1 - beta) * val_loss
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        # scheduler 用 smooth
+        scheduler.step(smooth_val_loss)
+
+        # ===== early stopping & save based on smoothed loss =====
+        if smooth_val_loss < best_val_loss:
+            best_val_loss = smooth_val_loss
             patience_counter = 0
-            # Save if this is the best version within this specific experiment
 
             torch.save(
-                    {
-                        "model_state_dict": model.state_dict(),
-                        "feature_count": in_channels,
-                        "hidden_channels": config['hidden_channels'],
-                        "num_layers": config['num_layers'],
-                        "dropout": config.get('dropout', 0.0),
-                        "features": features_idx,
-                        "model_type": config['model_type'],
-                        "heads": config['heads'],
-                    },
+                {
+                    "model_state_dict": model.state_dict(),
+                    "feature_count": in_channels,
+                    "hidden_channels": config['hidden_channels'],
+                    "num_layers": config['num_layers'],
+                    "dropout": config.get('dropout', 0.0),
+                    "features": features_idx,
+                    "model_type": config['model_type'],
+                    "heads": config['heads'],
+                },
                 f"models/best_model_{config['model_type']}-h{config['hidden_channels']}-l{config['num_layers']}-d{config.get('dropout', 0.0)}_{features_str}_{config['heads']}.pt"
             )
         else:
