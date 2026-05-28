@@ -19,7 +19,7 @@ from torch_geometric.nn import GATv2Conv
 FEATURE_COUNT = 7
 HIDDEN_CHANNELS = 64
 NUM_LAYERS = 4
-K_H = 4
+K_H = 8
 
 
 def add_clustering_coefficient_feature(data):
@@ -177,7 +177,8 @@ def add_max_neighbor_degree(data):
     data.x = torch.cat([x, torch.log1p(max_neigh_deg)], dim=1)
     return data
 
-all_features = [add_degree_feature, add_core_number_feature, add_clustering_coefficient_feature, add_mean_neighbor_degree, add_max_neighbor_degree]
+#all_features = [add_degree_feature, add_core_number_feature, add_clustering_coefficient_feature, add_mean_neighbor_degree, add_max_neighbor_degree]
+all_features = [add_degree_feature, add_core_number_feature]
 
 def build_features(data):
     for feature in all_features:
@@ -282,7 +283,7 @@ class Model:
                 if model_type == "GIN":
                     self.net = GIN(self.features, hiddens, layers).to(self.device)
                 elif model_type == "GAT":
-                    self.net = GATv2Net(self.features, hiddens, layers, K_H, dropout).to(self.device)
+                    self.net = GATv2Net(self.features, hiddens, layers, ckpt["heads"], dropout).to(self.device)
                 self.net.load_state_dict(ckpt["model_state_dict"], strict=False)
 
         self.net.eval()

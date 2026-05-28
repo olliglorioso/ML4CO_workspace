@@ -112,8 +112,9 @@ def run_experiment(config, train_graphs, val_graphs, device):
                         "dropout": config.get('dropout', 0.0),
                         "features": features_idx,
                         "model_type": config['model_type'],
+                        "heads": config['heads'],
                     },
-                f"models/best_model_{config['model_type']}-h{config['hidden_channels']}-l{config['num_layers']}-d{config.get('dropout', 0.0)}_{features_str}.pt"
+                f"models/best_model_{config['model_type']}-h{config['hidden_channels']}-l{config['num_layers']}-d{config.get('dropout', 0.0)}_{features_str}_{config['heads']}.pt"
             )
         else:
             patience_counter += 1
@@ -136,21 +137,23 @@ def hpo_sweep(dataset, device):
         all_combos += list(itertools.combinations(arr, k))
     all_combos = [[1,2] + list(a) for a in all_combos]
     all_combos = sorted(all_combos, key=len, reverse=True)
+    all_combos.append([1,2])
     train_graphs, val_graphs = get_prepared_data(dataset, limit=5000)
 
     print(all_combos)
 
     search_space = {
-        'hidden_channels': [64, 32],
-        'num_layers': [4,3],
-        'lr': [1e-3],
-        'batch_size': [16],
-        'model_type': ["GIN", "GAT"],
+        'hidden_channels': [16],
+        'num_layers': [2,3,4],
+        'lr': [3e-4],
+        'batch_size': [16,32],
+        'model_type': ["GAT"],
         #'model_type': ["GSAGE"],
-        'epochs': [200, 100],
-        'early_stopping': [1],
-        'dropout': [0],
+        'epochs': [500],
+        'early_stopping': [20],
+        'dropout': [0.2, 0.3, 0.4, 0.5],
         'features': all_combos,
+        'heads': [4,8,16],
     }
 
     # Generate all combinations
@@ -171,6 +174,7 @@ def hpo_sweep(dataset, device):
         "early_stopping",
         "dropout",
         "features",
+        "heads",
         "val_loss",
     ]
 
@@ -186,7 +190,7 @@ def hpo_sweep(dataset, device):
             print(
                 f"Trial {i+1}/{len(combinations)} | Testing: Layers={config['num_layers']}, "
                 f"Hidden={config['hidden_channels']}, Type={config['model_type']}, Dropout={config['dropout']},"
-                f"Features: {features}, Epochs={config['epochs']}"
+                f"Features: {features}, Epochs={config['epochs']}, Heads={config['heads']}"
             )
 
             val_loss = run_experiment(config, train_graphs, val_graphs, device)
