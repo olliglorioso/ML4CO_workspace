@@ -29,6 +29,7 @@ def main():
     for data in graphs:
         pred = model.predict(data)
         predictions.append(pred)
+        print(len(predictions))
 
     torch.save(predictions, OUTPUT_FILE)
 

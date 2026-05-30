@@ -69,7 +69,7 @@ def run_experiment(config, train_graphs, val_graphs, device):
     elif config['model_type'] == "GAT":
         from model import GATv2Net as model_cls
     elif config['model_type'] == "GSAGE":
-        from model_gsage import GraphSAGENet as model_cls
+        from model import GraphSAGENet as model_cls
     else:
         raise ValueError(f"Unsupported model_type: {config['model_type']}")
 
@@ -80,7 +80,8 @@ def run_experiment(config, train_graphs, val_graphs, device):
     }
     if config['model_type'] in {"GAT", "GSAGE"}:
         model_kwargs["dropout"] = config.get('dropout', 0.2)
-        model_kwargs["heads"] = config.get('heads', 0.2)
+    if config['model_type'] in {"GAT"}:
+        model_kwargs["heads"] = config.get('heads', 4)
 
 
     model = model_cls(**model_kwargs).to(device)
@@ -156,17 +157,17 @@ def hpo_sweep(dataset, device):
     print(all_combos)
 
     search_space = {
-        'hidden_channels': [16],
-        'num_layers': [2,3,4],
-        'lr': [3e-4],
+        'hidden_channels': [64,128],
+        'num_layers': [3,4,5],
+        'lr': [1e-3, 2e-3],
         'batch_size': [16,32],
-        'model_type': ["GAT"],
-        #'model_type': ["GSAGE"],
+        #'model_type': ["GAT"],
+        'model_type': ["GSAGE"],
         'epochs': [500],
-        'early_stopping': [20],
-        'dropout': [0.2, 0.3, 0.4, 0.5],
+        'early_stopping': [30],
+        'dropout': [0.4,0.2],
         'features': all_combos,
-        'heads': [4,8,16],
+        'heads': [4],
     }
 
     # Generate all combinations

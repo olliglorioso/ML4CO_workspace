@@ -9,6 +9,7 @@ from torch_geometric.utils import to_networkx
 import networkx as nx
 from torch_geometric.utils import subgraph
 from torch_geometric.nn import GATv2Conv
+from torch_geometric.nn import SAGEConv
 
 
 # edge_index = tensor([
@@ -186,12 +187,58 @@ def build_features(data):
     return data
 
 
+class GraphSAGENet(nn.Module):
+    def __init__(
+        self,
+        features_idx=[],
+        hidden_channels=HIDDEN_CHANNELS,
+        num_layers=NUM_LAYERS,
+        dropout=0.2,
+    ):
+        super().__init__()
+
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        self.dropout = dropout
+        self.features_idx = [0] + features_idx
+        in_channels = len(self.features_idx)
+
+        for i in range(num_layers):
+            in_dim = in_channels if i == 0 else hidden_channels
+            self.convs.append(SAGEConv(in_dim, hidden_channels))
+            self.norms.append(nn.LayerNorm(hidden_channels))
+
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.ReLU(),
+            nn.Linear(hidden_channels, 3),
+        )
+
+    def forward(self, x, edge_index):
+        x = x[:, self.features_idx]
+
+        for i, (conv, norm) in enumerate(zip(self.convs, self.norms)):
+            h = x
+            x = conv(x, edge_index)
+            x = norm(x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            if i > 0:   # 第一层dim可能不一致
+                x = x + h
+
+
+        return self.classifier(x)
+
+
+
+
 class GATv2Net(nn.Module):
     def __init__(self, features_idx=[], hidden_channels=HIDDEN_CHANNELS, num_layers=NUM_LAYERS, heads=K_H, dropout=0.2):
         super().__init__()
 
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
+        self.projs = nn.ModuleList()
         self.dropout = dropout
         self.features_idx = [0] + features_idx
         in_channels = len(self.features_idx)
@@ -209,6 +256,11 @@ class GATv2Net(nn.Module):
 
             self.convs.append(conv)
             self.norms.append(nn.LayerNorm(hidden_channels * heads))
+            # residual projection（关键）
+            if in_dim != hidden_channels * heads:
+                self.projs.append(nn.Linear(in_dim, hidden_channels * heads))
+            else:
+                self.projs.append(nn.Identity())
 
         self.classifier = nn.Sequential(
             nn.Linear(hidden_channels * heads, hidden_channels),
@@ -218,10 +270,13 @@ class GATv2Net(nn.Module):
 
     def forward(self, x, edge_index):
         x = x[:, self.features_idx]
-        for conv, norm in zip(self.convs, self.norms):
+        for conv, norm, proj in zip(self.convs, self.norms, self.projs):
+            h = x
             x = conv(x, edge_index)
             x = norm(x)
             x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training) # dropout
+            x = x + proj(h)
 
         return self.classifier(x)
 
@@ -284,6 +339,8 @@ class Model:
                     self.net = GIN(self.features, hiddens, layers).to(self.device)
                 elif model_type == "GAT":
                     self.net = GATv2Net(self.features, hiddens, layers, ckpt["heads"], dropout).to(self.device)
+                elif model_type == "GSAGE":
+                    self.net = GraphSAGENet(self.features, hiddens, layers, dropout).to(self.device)
                 self.net.load_state_dict(ckpt["model_state_dict"], strict=False)
 
         self.net.eval()
@@ -338,17 +395,256 @@ class Model:
 
         return best_mis
 
+    def grasp_mc2(
+        self,
+        logits,
+        edge_index,
+        num_nodes,
+        num_candidates=128,
+        weights=None,
+    ):
+        """
+        Max Clique via MIS on complement graph
+        """
 
+        device = self.device
 
+        row, col = edge_index
 
+        # =====================================================
+        # build adjacency matrix (bool)
+        # =====================================================
 
-    def recursive_basic_mc(self, logits, edge_index, num_nodes, num_candidates=64):
-        adj = torch.ones((num_nodes, num_nodes), device=self.device)
-        adj.fill_diagonal_(0)
-        adj[edge_index[0], edge_index[1]] = 0
-        complement_edge_index = adj.nonzero().t()
+        adj = torch.zeros(
+            (num_nodes, num_nodes),
+            dtype=torch.bool,
+            device=device
+        )
 
-        return self.grasp_mis(logits, complement_edge_index)
+        adj[row, col] = True
+        adj[col, row] = True
+
+        # no self-loop
+        adj.fill_diagonal_(True)
+
+        # complement
+        comp_adj = ~adj
+
+        complement_edge_index = comp_adj.nonzero().t()
+
+        return self.grasp_mis(
+            logits,
+            complement_edge_index,
+            num_candidates=num_candidates,
+            weights=weights,
+        )
+    def grasp_mvc(
+        self,
+        logits,
+        edge_index,
+        num_nodes,
+        num_candidates=128,
+        weights=None,
+        alpha=0.35,
+        beta=0.15,
+    ):
+        """
+        Optimized GRASP-style MVC solver.
+
+        Features:
+        - randomized construction
+        - uncovered-edge repair
+        - degree-aware scoring
+        - weight-aware objective
+        - redundant-node pruning
+        - randomized local search
+
+        Args:
+            logits: [N]
+            edge_index: [2, E]
+            num_nodes: int
+            weights: [N] or None
+        """
+
+        device = self.device
+
+        row, col = edge_index
+
+        # =========================================================
+        # Degree heuristic
+        # =========================================================
+
+        deg = torch.bincount(
+            torch.cat([row, col]),
+            minlength=num_nodes
+        ).float().to(device)
+
+        # normalized degree
+        deg_score = torch.log1p(deg)
+
+        # =========================================================
+        # Base node scores
+        # =========================================================
+
+        logits = logits.float()
+
+        if weights is not None:
+
+            weights = weights.float().to(device)
+
+            # prefer:
+            # high logit
+            # high degree
+            # low weight
+            node_scores = (
+                logits
+                + alpha * deg_score
+                - beta * torch.log1p(weights)
+            )
+
+        else:
+
+            node_scores = (
+                logits
+                + alpha * deg_score
+            )
+
+        # =========================================================
+        # Sampling initialization
+        # =========================================================
+
+        probs = torch.sigmoid(node_scores)
+
+        probs = probs.clamp(0.05, 0.95)
+
+        candidates = torch.bernoulli(
+            probs.repeat(num_candidates, 1)
+        ).to(device)
+
+        best_cover = None
+        best_value = float("inf")
+
+        # =========================================================
+        # Main GRASP loop
+        # =========================================================
+
+        for i in range(num_candidates):
+
+            mask = candidates[i].clone()
+
+            # =====================================================
+            # REPAIR:
+            # cover all uncovered edges
+            # =====================================================
+
+            while True:
+
+                uncovered = (
+                    (mask[row] == 0)
+                    & (mask[col] == 0)
+                )
+
+                if not uncovered.any():
+                    break
+
+                rr = row[uncovered]
+                cc = col[uncovered]
+
+                # choose better endpoint
+                choose_r = node_scores[rr] >= node_scores[cc]
+
+                chosen = torch.where(
+                    choose_r,
+                    rr,
+                    cc
+                )
+
+                mask[chosen] = 1
+
+            # =====================================================
+            # FAST REDUNDANCY CHECK
+            # =====================================================
+
+            changed = True
+
+            while changed:
+
+                changed = False
+
+                selected = torch.where(mask == 1)[0]
+
+                if len(selected) == 0:
+                    break
+
+                # randomized pruning order
+                perm = selected[
+                    torch.randperm(len(selected), device=device)
+                ]
+
+                for v in perm:
+
+                    mask[v] = 0
+
+                    uncovered = (
+                        (mask[row] == 0)
+                        & (mask[col] == 0)
+                    )
+
+                    # invalid removal
+                    if uncovered.any():
+                        mask[v] = 1
+                    else:
+                        changed = True
+
+            # =====================================================
+            # LOCAL SEARCH
+            # try removing low-value nodes
+            # =====================================================
+
+            selected = torch.where(mask == 1)[0]
+
+            if len(selected) > 0:
+
+                # low score first
+                _, order = torch.sort(node_scores[selected])
+
+                selected = selected[order]
+
+                for v in selected:
+
+                    mask[v] = 0
+
+                    uncovered = (
+                        (mask[row] == 0)
+                        & (mask[col] == 0)
+                    )
+
+                    if uncovered.any():
+                        mask[v] = 1
+
+            # =====================================================
+            # OBJECTIVE
+            # =====================================================
+
+            if weights is not None:
+                value = (
+                    mask.float() * weights
+                ).sum().item()
+            else:
+                value = mask.sum().item()
+
+            # =====================================================
+            # BEST
+            # =====================================================
+
+            if value < best_value:
+
+                best_value = value
+
+                best_cover = mask.clone()
+
+        return best_cover
+
 
     def get_complement(self, data):
         edge_index = data.edge_index
@@ -360,128 +656,193 @@ class Model:
         comp_adj.fill_diagonal_(False)
         return comp_adj.nonzero(as_tuple=False).t().long().contiguous()
 
-    def recursive_basic_mis(self, data): #https://arxiv.org/pdf/1810.10659
-        N = data.num_nodes
-        global_labels = torch.full((N,), -1, dtype=torch.long, device=self.device)
-
-        curr_x = data.x.float().to(self.device)
-        curr_edge_index = data.edge_index.to(self.device)
-
-        curr_mapping = torch.arange(N, device=self.device)
-
-        while curr_mapping.numel() > 0:
-            with torch.no_grad():
-                out = self.net(curr_x, curr_edge_index)
-                scores = out[:, 0]
-
-            v_sorted = torch.argsort(scores, descending=True)
-            step_labeled_mask = torch.zeros(len(curr_mapping), dtype=torch.bool, device=self.device)
-
-            for i in v_sorted:
-                idx = i.item()
-
-                if step_labeled_mask[idx]:
-                    break
-
-                global_labels[curr_mapping[idx]] = 1
-                step_labeled_mask[idx] = True
-                row, col = curr_edge_index
-                neighbors = col[row == idx]
-
-                global_labels[curr_mapping[neighbors]] = 0
-                step_labeled_mask[neighbors] = True
-
-            remaining_mask = ~step_labeled_mask
-            if not remaining_mask.any():
-                break
-
-            remaining_indices = torch.where(remaining_mask)[0]
-
-            new_edge_index, _ = subgraph(
-                remaining_indices,
-                curr_edge_index,
-                relabel_nodes=True,
-                num_nodes=len(curr_mapping)
-            )
-
-            curr_x = curr_x[remaining_indices]
-            curr_edge_index = new_edge_index
-            curr_mapping = curr_mapping[remaining_indices]
-        global_labels[global_labels == -1] = 1
-        return global_labels
-
-    def tree_search_mis(self, data, time_budget=5.0, M=16, max_queue_size=256):
-        N = data.num_nodes
-        best_labels = self.recursive_basic_mis(data)
-        weights = data.x[:, 0].float().to(self.device)
-        best_value = (best_labels.float() * weights).sum().item()
-        queue = [(
-            data.x.float().to(self.device),
-            data.edge_index.to(self.device),
-            torch.arange(N, device=self.device),
-            torch.full((N,), -1, dtype=torch.long, device=self.device),
-        )]
-        end_time = time.time() + time_budget
-        while queue and time.time() < end_time:
-            pop_idx = torch.randint(len(queue), (1,)).item()
-            curr_x, curr_edge_index, curr_mapping, base_labels = queue.pop(pop_idx)
-            for m in range(M):
-                if time.time() >= end_time:
-                    break
-                labels = base_labels.clone()
-                step_labeled_mask = torch.zeros(curr_mapping.numel(), dtype=torch.bool, device=self.device)
-                with torch.no_grad():
-                    out = self.net(curr_x, curr_edge_index)
-                    scores = out[:, 0]
-                if m > 0:
-                    scores = scores + torch.randn_like(scores) * (0.01 * m)
-                v_sorted = torch.argsort(scores, descending=True)
-                row, col = curr_edge_index
-                for i in v_sorted:
-                    idx = i.item()
-                    if step_labeled_mask[idx]:
-                        break
-                    labels[curr_mapping[idx]] = 1
-                    step_labeled_mask[idx] = True
-                    neighbors = col[row == idx]
-                    labels[curr_mapping[neighbors]] = 0
-                    step_labeled_mask[neighbors] = True
-                remaining_mask = ~step_labeled_mask
-                if not remaining_mask.any():
-                    value = (labels.float() * weights).sum().item()
-                    if value > best_value:
-                        best_value = value
-                        best_labels = labels.clone()
-                else:
-                    remaining_indices = torch.where(remaining_mask)[0]
-                    new_edge_index, _ = subgraph(
-                        remaining_indices,
-                        curr_edge_index,
-                        relabel_nodes=True,
-                        num_nodes=len(curr_mapping)
-                    )
-                    queue.append((
-                        curr_x[remaining_indices],
-                        new_edge_index,
-                        curr_mapping[remaining_indices],
-                        labels,
-                    ))
-                    if len(queue) > max_queue_size:
-                        queue.pop(0)
-
-        return best_labels
-
-    def grasp_mc(self, logits, edge_index, num_nodes, num_candidates=128, weights=None):
+    def grasp_mc2(self, logits, edge_index, num_nodes, num_candidates=128, weights=None):
         adj = torch.ones((num_nodes, num_nodes), device=self.device)
         adj.fill_diagonal_(0)
         adj[edge_index[0], edge_index[1]] = 0
         complement_edge_index = adj.nonzero().t()
         return self.grasp_mis(logits, complement_edge_index, num_candidates, weights)
 
+    def grasp_mc(
+        self,
+        logits,
+        edge_index,
+        num_nodes,
+        num_candidates=128,
+        weights=None,
+        alpha=0.25,
+    ):
+        """
+        Direct GRASP Max Clique
+
+        Features:
+        - direct clique construction
+        - candidate intersection
+        - degree-aware scoring
+        - randomized greedy
+        - local expansion
+        """
+
+        device = self.device
+
+        row, col = edge_index
+
+        # =====================================================
+        # Build adjacency matrix
+        # =====================================================
+
+        adj = torch.zeros(
+            (num_nodes, num_nodes),
+            dtype=torch.bool,
+            device=device
+        )
+
+        adj[row, col] = True
+        adj[col, row] = True
+
+        # =====================================================
+        # Degree heuristic
+        # =====================================================
+
+        deg = adj.sum(dim=1).float()
+
+        logits = logits.float()
+
+        if weights is not None:
+
+            weights = weights.float().to(device)
+
+            node_scores = (
+                logits
+                + alpha * torch.log1p(deg)
+                + torch.log1p(weights)
+            )
+
+        else:
+
+            node_scores = (
+                logits
+                + alpha * torch.log1p(deg)
+            )
+
+        # =====================================================
+        # Sampling probs
+        # =====================================================
+
+        probs = torch.sigmoid(node_scores)
+        probs = probs.clamp(0.05, 0.95)
+
+        best_clique = None
+        best_value = -1
+
+        # =====================================================
+        # Main GRASP loop
+        # =====================================================
+
+        for _ in range(num_candidates):
+
+            clique = torch.zeros(
+                num_nodes,
+                dtype=torch.bool,
+                device=device
+            )
+
+            # initially all nodes available
+            candidates = torch.ones(
+                num_nodes,
+                dtype=torch.bool,
+                device=device
+            )
+
+            # =================================================
+            # Clique construction
+            # =================================================
+
+            while candidates.any():
+
+                cand_nodes = torch.where(candidates)[0]
+
+                cand_scores = node_scores[cand_nodes]
+
+                # randomized greedy sampling
+                cand_probs = torch.softmax(
+                    cand_scores,
+                    dim=0
+                )
+
+                idx = torch.multinomial(
+                    cand_probs,
+                    1
+                ).item()
+
+                v = cand_nodes[idx]
+
+                # add to clique
+                clique[v] = True
+
+                # update candidates:
+                # must connect to v
+                candidates &= adj[v]
+
+                # cannot reselect
+                candidates[v] = False
+
+            # =================================================
+            # Local expansion
+            # =================================================
+
+            improved = True
+
+            while improved:
+
+                improved = False
+
+                non_clique = torch.where(~clique)[0]
+
+                for v in non_clique:
+
+                    clique_nodes = torch.where(clique)[0]
+
+                    if len(clique_nodes) == 0:
+                        continue
+
+                    # v connects to all clique nodes
+                    if adj[v, clique_nodes].all():
+
+                        clique[v] = True
+                        improved = True
+
+            # =================================================
+            # Objective
+            # =================================================
+
+            if weights is not None:
+
+                value = (
+                    clique.float() * weights
+                ).sum().item()
+
+            else:
+
+                value = clique.sum().item()
+
+            # =================================================
+            # Best
+            # =================================================
+
+            if value > best_value:
+
+                best_value = value
+                best_clique = clique.clone()
+
+        return best_clique
+
+
     def predict(self, data):
         data = build_features(data)
         x = data.x.float().to(self.device)
         edge_index = data.edge_index.to(self.device)
+
 
         with torch.no_grad():
             out = self.net(x, edge_index)
@@ -493,7 +854,8 @@ class Model:
 
 
         mis = self.grasp_mis(mis_logits, edge_index, num_candidates=256, weights=weights)
-        mvc = 1 - self.grasp_mis(mvc_logits, edge_index, num_candidates=256, weights=weights)
+        #mvc = 1 - self.grasp_mis(mvc_logits, edge_index, num_candidates=256, weights=weights)
+        mvc = self.grasp_mvc(mvc_logits, edge_index, data.num_nodes, num_candidates=256, weights=weights)
         mc = self.grasp_mc(mc_logits, edge_index, data.num_nodes, num_candidates=256, weights=weights)
 
         return {
